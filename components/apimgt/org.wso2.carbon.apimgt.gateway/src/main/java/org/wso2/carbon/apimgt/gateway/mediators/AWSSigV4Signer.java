@@ -102,7 +102,7 @@ public class AWSSigV4Signer extends AbstractMediator implements ManagedLifecycle
                 incomingHeaders = (Map<String, String>) axis2Ctx.getProperty(
                         org.apache.axis2.context.MessageContext.TRANSPORT_HEADERS);
             }
-            Map<String, String> headers = StringUtils.isNotEmpty(roleArn)
+            Map<String, String> headers = StringUtils.isNotBlank(roleArn)
                     ? AWSUtil.generateAWSSignatureUsingAssumeRole(uri.getHost(), httpMethod.toUpperCase(), service,
                             encodePathTrimSlashes(backendRequestResource), getQueryString(path), payload,
                             accessKey, secretKey, region, null, roleArn, roleRegion, roleExternalId, new HashMap<>())
@@ -205,7 +205,7 @@ public class AWSSigV4Signer extends AbstractMediator implements ManagedLifecycle
             throw new SynapseException("AWSSigV4Signer mediator is not properly configured. " +
                     "Access Key, Secret Key, Region, Service and Endpoint are required.");
         }
-        if (StringUtils.isNotEmpty(roleArn) != StringUtils.isNotEmpty(roleRegion)) {
+        if (StringUtils.isNotBlank(roleArn) != StringUtils.isNotBlank(roleRegion)) {
             throw new SynapseException("AWSSigV4Signer mediator is not properly configured. " +
                     "Role ARN and Role Region must be provided together to assume a role.");
         }
