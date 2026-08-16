@@ -3397,6 +3397,12 @@ public class APIManagerConfiguration {
             apimGovConfigurationDto.setDataSourceName(dataSourceName);
         }
 
+        OMElement complianceAffectingSeverities = omElement
+                .getFirstChildWithName(new QName(APIConstants.APIMGovernance.COMPLIANCE_AFFECTING_SEVERITIES));
+        if (complianceAffectingSeverities != null) {
+            apimGovConfigurationDto.setComplianceAffectingSeverities(complianceAffectingSeverities.getText());
+        }
+
         OMElement schedulerConfig = omElement
                 .getFirstChildWithName(new QName(APIConstants.APIMGovernance.SCHEDULER_CONFIG));
 
