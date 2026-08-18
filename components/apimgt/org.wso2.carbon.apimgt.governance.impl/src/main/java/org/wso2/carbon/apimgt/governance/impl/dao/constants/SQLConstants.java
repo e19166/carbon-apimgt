@@ -352,6 +352,59 @@ public class SQLConstants {
             "JOIN GOV_ARTIFACT GA ON GRR.ARTIFACT_KEY = GA.ARTIFACT_KEY " +
             "WHERE GA.ARTIFACT_REF_ID = ? AND GA.ARTIFACT_TYPE = ? AND GA.ORGANIZATION = ? AND GRR.RULESET_ID = ?";
 
+    /**
+     * Name of the optional column holding the severities that affect compliance for a ruleset. The column is not
+     * created by the product; a deployment opts in to per-ruleset severity filtering by adding it.
+     */
+    public static final String COMPLIANCE_AFFECTING_SEVERITIES_COLUMN = "COMPLIANCE_AFFECTING_SEVERITIES";
+
+    public static final String GOV_RULESET_TABLE = "GOV_RULESET";
+
+    public static final String GET_COMPLIANCE_AFFECTING_SEVERITIES = "SELECT COMPLIANCE_AFFECTING_SEVERITIES "
+            + "FROM GOV_RULESET WHERE RULESET_ID = ? AND ORGANIZATION = ?";
+
+    public static final String UPDATE_COMPLIANCE_AFFECTING_SEVERITIES = "UPDATE GOV_RULESET "
+            + "SET COMPLIANCE_AFFECTING_SEVERITIES = ? WHERE RULESET_ID = ? AND ORGANIZATION = ?";
+
+    /**
+     * Severity aware variants of the failing ruleset queries, used only when the optional compliance affecting
+     * severity column exists. Each returns the violated severity alongside the severities configured for the ruleset,
+     * so the comparison happens in Java. Matching a severity against a comma separated column in SQL would need
+     * vendor specific string functions, which these queries deliberately avoid.
+     */
+    public static final String GET_FAILED_RULESET_RUNS_WITH_SEVERITY =
+            "SELECT DISTINCT GRR.RULESET_ID, GRULE.SEVERITY, GRS.COMPLIANCE_AFFECTING_SEVERITIES "
+                    + "FROM GOV_RULESET_RUN GRR "
+                    + "JOIN GOV_ARTIFACT GA ON GRR.ARTIFACT_KEY = GA.ARTIFACT_KEY "
+                    + "JOIN GOV_RULESET GRS ON GRR.RULESET_ID = GRS.RULESET_ID "
+                    + "JOIN GOV_RULE_VIOLATION GV ON GV.RULESET_RUN_ID = GRR.RULESET_RUN_ID "
+                    + "JOIN GOV_RULESET_RULE GRULE ON GV.RULESET_ID = GRULE.RULESET_ID "
+                    + "AND GV.RULE_NAME = GRULE.RULE_NAME "
+                    + "WHERE GA.ORGANIZATION = ?";
+
+    public static final String GET_FAILED_RULESET_RUNS_FOR_ARTIFACT_WITH_SEVERITY =
+            "SELECT DISTINCT GRR.RULESET_ID, GRULE.SEVERITY, GRS.COMPLIANCE_AFFECTING_SEVERITIES "
+                    + "FROM GOV_RULESET_RUN GRR "
+                    + "JOIN GOV_ARTIFACT GA ON GRR.ARTIFACT_KEY = GA.ARTIFACT_KEY "
+                    + "JOIN GOV_RULESET GRS ON GRR.RULESET_ID = GRS.RULESET_ID "
+                    + "JOIN GOV_RULE_VIOLATION GV ON GV.RULESET_RUN_ID = GRR.RULESET_RUN_ID "
+                    + "JOIN GOV_RULESET_RULE GRULE ON GV.RULESET_ID = GRULE.RULESET_ID "
+                    + "AND GV.RULE_NAME = GRULE.RULE_NAME "
+                    + "WHERE GA.ARTIFACT_REF_ID = ? AND GA.ARTIFACT_TYPE = ? AND GA.ORGANIZATION = ?";
+
+    public static final String GET_NON_COMPLIANT_ARTIFACTS_WITH_SEVERITY =
+            "SELECT DISTINCT GA.ARTIFACT_REF_ID, GRULE.SEVERITY, GRS.COMPLIANCE_AFFECTING_SEVERITIES "
+                    + "FROM GOV_ARTIFACT GA "
+                    + "JOIN GOV_POLICY_RUN GPR ON GA.ARTIFACT_KEY = GPR.ARTIFACT_KEY "
+                    + "JOIN GOV_POLICY_RULESET GPRR ON GPR.POLICY_ID = GPRR.POLICY_ID "
+                    + "JOIN GOV_RULESET_RUN GRR ON GA.ARTIFACT_KEY = GRR.ARTIFACT_KEY "
+                    + "AND GRR.RULESET_ID = GPRR.RULESET_ID "
+                    + "JOIN GOV_RULESET GRS ON GRR.RULESET_ID = GRS.RULESET_ID "
+                    + "JOIN GOV_RULE_VIOLATION GV ON GV.RULESET_RUN_ID = GRR.RULESET_RUN_ID "
+                    + "JOIN GOV_RULESET_RULE GRULE ON GV.RULESET_ID = GRULE.RULESET_ID "
+                    + "AND GV.RULE_NAME = GRULE.RULE_NAME "
+                    + "WHERE GA.ARTIFACT_TYPE = ? AND GA.ORGANIZATION = ?";
+
     public static final String GET_FAILED_RULESET_RUNS = "SELECT DISTINCT RULESET_ID FROM GOV_RULESET_RUN GRR " +
             "JOIN GOV_ARTIFACT GA ON GRR.ARTIFACT_KEY = GA.ARTIFACT_KEY " +
             "WHERE GA.ORGANIZATION = ? AND GRR.RESULT = 0";

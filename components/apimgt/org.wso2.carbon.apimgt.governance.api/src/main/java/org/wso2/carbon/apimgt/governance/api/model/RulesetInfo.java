@@ -35,6 +35,12 @@ public class RulesetInfo {
     private String updatedBy;
     private String updatedTime;
 
+    /**
+     * Comma separated rule severities that make this ruleset fail. Null means every severity affects compliance,
+     * which is also the behaviour when the feature is not enabled on the deployment.
+     */
+    private String complianceAffectingSeverities;
+
     public String getId() {
         return id;
     }
@@ -129,5 +135,13 @@ public class RulesetInfo {
 
     public void setRuleCategory(RuleCategory ruleCategory) {
         this.ruleCategory = ruleCategory;
+    }
+
+    public String getComplianceAffectingSeverities() {
+        return complianceAffectingSeverities;
+    }
+
+    public void setComplianceAffectingSeverities(String complianceAffectingSeverities) {
+        this.complianceAffectingSeverities = complianceAffectingSeverities;
     }
 }

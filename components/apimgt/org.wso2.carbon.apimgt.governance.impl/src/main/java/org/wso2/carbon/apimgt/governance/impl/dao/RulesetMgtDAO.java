@@ -132,4 +132,33 @@ public interface RulesetMgtDAO {
      * @return List of rules
      */
     List<Rule> getRulesByRulesetId(String rulesetId, String organization) throws APIMGovernanceException;
+
+    /**
+     * Get the severities that affect compliance for a ruleset
+     *
+     * @param rulesetId    Ruleset ID
+     * @param organization Organization
+     * @return Comma separated severities, or null when the feature is not enabled or nothing is configured
+     * @throws APIMGovernanceException If an error occurs while reading the severities
+     */
+    String getComplianceAffectingSeverities(String rulesetId, String organization) throws APIMGovernanceException;
+
+    /**
+     * Set the severities that affect compliance for a ruleset
+     *
+     * @param rulesetId    Ruleset ID
+     * @param organization Organization
+     * @param severities   Comma separated severities, null to fall back to every severity
+     * @throws APIMGovernanceException If the feature is not enabled, or an error occurs while writing
+     */
+    void updateComplianceAffectingSeverities(String rulesetId, String organization, String severities)
+            throws APIMGovernanceException;
+
+    /**
+     * Check whether per ruleset compliance affecting severity filtering is available on this deployment
+     *
+     * @return True when the optional column exists
+     * @throws APIMGovernanceException If the database metadata cannot be read
+     */
+    boolean isComplianceAffectingSeverityFilteringAvailable() throws APIMGovernanceException;
 }

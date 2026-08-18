@@ -49,6 +49,7 @@ public class RulesetMappingUtil {
         rulesetInfoDTO.setCreatedTime(rulesetInfo.getCreatedTime());
         rulesetInfoDTO.setUpdatedBy(rulesetInfo.getUpdatedBy());
         rulesetInfoDTO.setUpdatedTime(rulesetInfo.getUpdatedTime());
+        rulesetInfoDTO.setComplianceAffectingSeverities(rulesetInfo.getComplianceAffectingSeverities());
         return rulesetInfoDTO;
     }
 }

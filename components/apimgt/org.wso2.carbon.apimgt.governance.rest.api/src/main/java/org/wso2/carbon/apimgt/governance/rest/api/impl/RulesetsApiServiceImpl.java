@@ -80,6 +80,7 @@ public class RulesetsApiServiceImpl implements RulesetsApiService {
                                   Attachment rulesetContentDetail, String ruleType,
                                   String artifactType, String description, String ruleCategory,
                                   String documentationLink, String provider,
+                                  String complianceAffectingSeverities,
                                   MessageContext messageContext) throws APIMGovernanceException {
         RulesetInfoDTO createdRulesetDTO;
         URI createdRulesetURI;
@@ -123,6 +124,14 @@ public class RulesetsApiServiceImpl implements RulesetsApiService {
             RulesetManager rulesetManager = new RulesetManager();
             RulesetInfo createdRuleset = rulesetManager.createNewRuleset(ruleset, organization);
 
+            // Rejected by the manager when the optional column does not exist, so an unsupported request fails
+            // loudly instead of silently discarding the value
+            if (StringUtils.isNotBlank(complianceAffectingSeverities)) {
+                rulesetManager.updateComplianceAffectingSeverities(createdRuleset.getId(), organization,
+                        complianceAffectingSeverities);
+                createdRuleset.setComplianceAffectingSeverities(complianceAffectingSeverities);
+            }
+
             createdRulesetDTO = RulesetMappingUtil.fromRulesetInfoToRulesetInfoDTO(createdRuleset);
             createdRulesetURI = new URI(
                     APIMGovernanceAPIConstants.RULESET_PATH + "/" + createdRulesetDTO.getId());
@@ -162,7 +171,8 @@ public class RulesetsApiServiceImpl implements RulesetsApiService {
     public Response updateRulesetById(String rulesetId, String name, InputStream rulesetContentInputStream,
                                       Attachment rulesetContentDetail, String ruleType, String artifactType,
                                       String description, String ruleCategory, String documentationLink,
-                                      String provider, MessageContext messageContext)
+                                      String provider, String complianceAffectingSeverities,
+                                      MessageContext messageContext)
             throws APIMGovernanceException {
 
         // Validation done manually to multipart form data
@@ -204,6 +214,18 @@ public class RulesetsApiServiceImpl implements RulesetsApiService {
 
             RulesetManager rulesetManager = new RulesetManager();
             RulesetInfo updatedRuleset = rulesetManager.updateRuleset(rulesetId, ruleset, organization);
+
+            // Rejected by the manager when the optional column does not exist. A blank value clears the setting,
+            // which falls back to every severity affecting compliance.
+            if (complianceAffectingSeverities != null) {
+                String severities = StringUtils.isBlank(complianceAffectingSeverities)
+                        ? null : complianceAffectingSeverities;
+                rulesetManager.updateComplianceAffectingSeverities(rulesetId, organization, severities);
+                updatedRuleset.setComplianceAffectingSeverities(severities);
+            } else {
+                updatedRuleset.setComplianceAffectingSeverities(
+                        rulesetManager.getComplianceAffectingSeverities(rulesetId, organization));
+            }
 
             // Re-access policy compliance in the background
             new ComplianceManager().handleRulesetChangeEvent(rulesetId, organization);
@@ -252,6 +274,9 @@ public class RulesetsApiServiceImpl implements RulesetsApiService {
         String organization = APIMGovernanceAPIUtil.getValidatedOrganization(messageContext);
 
         RulesetInfo ruleset = rulesetManager.getRulesetById(rulesetId, organization);
+        // Only populated when the optional column exists, so the portal never receives a value it cannot explain
+        ruleset.setComplianceAffectingSeverities(
+                rulesetManager.getComplianceAffectingSeverities(rulesetId, organization));
         RulesetInfoDTO rulesetInfoDTO = RulesetMappingUtil.fromRulesetInfoToRulesetInfoDTO(ruleset);
         return Response.status(Response.Status.OK).entity(rulesetInfoDTO).build();
     }

@@ -42,6 +42,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.Charset;
 import java.sql.Connection;
+import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -56,6 +57,12 @@ import java.util.Map;
 public class RulesetMgtDAOImpl implements RulesetMgtDAO {
 
     private static final Log log = LogFactory.getLog(RulesetMgtDAOImpl.class);
+
+    /**
+     * Whether the optional compliance affecting severity column exists. Resolved once, so a deployment
+     * which adds the column needs a server restart before the feature becomes available.
+     */
+    private static volatile Boolean severityColumnPresent;
 
     private RulesetMgtDAOImpl() {
     }
@@ -614,5 +621,118 @@ public class RulesetMgtDAOImpl implements RulesetMgtDAO {
                     , e, rulesetId);
         }
     }
-}
 
+    /**
+     * Check whether the optional compliance affecting severity column exists on GOV_RULESET.
+     * <p>
+     * The column is not created by the product. A deployment opts in to per-ruleset severity filtering by adding it,
+     * and until then compliance behaves exactly as it did before the feature existed. The result is cached, so a
+     * server restart is required after adding the column.
+     *
+     * @param connection Connection to inspect
+     * @return True when the column is present
+     * @throws SQLException If the database metadata cannot be read
+     */
+    static boolean isComplianceAffectingSeverityColumnPresent(Connection connection) throws SQLException {
+
+        if (severityColumnPresent != null) {
+            return severityColumnPresent;
+        }
+
+        DatabaseMetaData metaData = connection.getMetaData();
+        boolean found = false;
+        // Identifier case differs between databases, so the column name is compared ignoring case rather than
+        // relying on getColumns matching a hard coded spelling.
+        try (ResultSet resultSet = metaData.getColumns(null, null,
+                resolveTableNameCase(metaData, SQLConstants.GOV_RULESET_TABLE), null)) {
+            while (resultSet.next()) {
+                if (SQLConstants.COMPLIANCE_AFFECTING_SEVERITIES_COLUMN
+                        .equalsIgnoreCase(resultSet.getString("COLUMN_NAME"))) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+
+        severityColumnPresent = found;
+        log.info(found
+                ? "Compliance affecting severity column found on " + SQLConstants.GOV_RULESET_TABLE
+                        + "; per ruleset severity filtering is available"
+                : "Compliance affecting severity column not found on " + SQLConstants.GOV_RULESET_TABLE
+                        + "; every severity affects compliance");
+        return found;
+    }
+
+    /**
+     * Spell a table name the way the underlying database stores unquoted identifiers
+     *
+     * @param metaData  Database metadata
+     * @param tableName Table name in upper case
+     * @return Table name in the case the database stores it in
+     * @throws SQLException If the database metadata cannot be read
+     */
+    private static String resolveTableNameCase(DatabaseMetaData metaData, String tableName)
+            throws SQLException {
+
+        if (metaData.storesLowerCaseIdentifiers()) {
+            return tableName.toLowerCase(java.util.Locale.ENGLISH);
+        }
+        return tableName;
+    }
+
+    @Override
+    public String getComplianceAffectingSeverities(String rulesetId, String organization)
+            throws APIMGovernanceException {
+
+        try (Connection connection = APIMGovernanceDBUtil.getConnection()) {
+            if (!isComplianceAffectingSeverityColumnPresent(connection)) {
+                return null;
+            }
+            try (PreparedStatement prepStmnt = connection
+                    .prepareStatement(SQLConstants.GET_COMPLIANCE_AFFECTING_SEVERITIES)) {
+                prepStmnt.setString(1, rulesetId);
+                prepStmnt.setString(2, organization);
+                try (ResultSet resultSet = prepStmnt.executeQuery()) {
+                    if (resultSet.next()) {
+                        return resultSet.getString(SQLConstants.COMPLIANCE_AFFECTING_SEVERITIES_COLUMN);
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            throw new APIMGovernanceException(APIMGovExceptionCodes.ERROR_WHILE_GETTING_RULESET_BY_ID, e);
+        }
+        return null;
+    }
+
+    @Override
+    public boolean isComplianceAffectingSeverityFilteringAvailable() throws APIMGovernanceException {
+
+        try (Connection connection = APIMGovernanceDBUtil.getConnection()) {
+            return isComplianceAffectingSeverityColumnPresent(connection);
+        } catch (SQLException e) {
+            throw new APIMGovernanceException(APIMGovExceptionCodes.ERROR_WHILE_GETTING_RULESET_BY_ID, e);
+        }
+    }
+
+    @Override
+    public void updateComplianceAffectingSeverities(String rulesetId, String organization, String severities)
+            throws APIMGovernanceException {
+
+        try (Connection connection = APIMGovernanceDBUtil.getConnection()) {
+            if (!isComplianceAffectingSeverityColumnPresent(connection)) {
+                // Hiding the control in the portal is not enough, the REST API can be called directly
+                throw new APIMGovernanceException(APIMGovExceptionCodes.ERROR_WHILE_UPDATING_RULESET,
+                        "Compliance affecting severity filtering is not enabled on this deployment");
+            }
+            try (PreparedStatement prepStmnt = connection
+                    .prepareStatement(SQLConstants.UPDATE_COMPLIANCE_AFFECTING_SEVERITIES)) {
+                prepStmnt.setString(1, severities);
+                prepStmnt.setString(2, rulesetId);
+                prepStmnt.setString(3, organization);
+                prepStmnt.executeUpdate();
+            }
+        } catch (SQLException e) {
+            throw new APIMGovernanceException(APIMGovExceptionCodes.ERROR_WHILE_UPDATING_RULESET, e, rulesetId);
+        }
+    }
+}

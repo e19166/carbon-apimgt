@@ -51,6 +51,7 @@ import org.wso2.carbon.apimgt.rest.api.common.RestApiCommonUtil;
 import org.wso2.carbon.apimgt.rest.api.common.RestApiConstants;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -157,9 +158,6 @@ public class ComplianceAPIUtil {
         } else if (policyAdherenceDetails.stream().anyMatch(dto -> dto.getStatus()
                 == PolicyAdherenceWithRulesetsDTO.StatusEnum.PENDING)) {
             status = ArtifactComplianceDetailsDTO.StatusEnum.PENDING;
-        } else if (policyAdherenceDetails.stream().anyMatch(dto -> dto.getStatus()
-                == PolicyAdherenceWithRulesetsDTO.StatusEnum.VIOLATED)) {
-            status = ArtifactComplianceDetailsDTO.StatusEnum.NON_COMPLIANT;
         } else if (policyAdherenceDetails.stream().anyMatch(dto -> dto.getStatus()
                 == PolicyAdherenceWithRulesetsDTO.StatusEnum.VIOLATED)) {
             status = ArtifactComplianceDetailsDTO.StatusEnum.NON_COMPLIANT;
@@ -289,9 +287,13 @@ public class ComplianceAPIUtil {
                 ruleset.getId(), organization);
 
 
-        rulesetDTO.setStatus(ruleViolations.isEmpty() ?
-                RulesetValidationResultWithoutRulesDTO.StatusEnum.PASSED :
-                RulesetValidationResultWithoutRulesDTO.StatusEnum.FAILED);
+        // Violations of a non compliance affecting severity are still reported, but they do not fail the ruleset
+        Set<RuleSeverity> affectingSeverities = APIMGovernanceUtil.resolveComplianceAffectingSeverities(
+                new RulesetManager().getComplianceAffectingSeverities(ruleset.getId(), organization));
+        rulesetDTO.setStatus(
+                APIMGovernanceUtil.filterComplianceAffectingViolations(ruleViolations, affectingSeverities).isEmpty()
+                        ? RulesetValidationResultWithoutRulesDTO.StatusEnum.PASSED
+                        : RulesetValidationResultWithoutRulesDTO.StatusEnum.FAILED);
 
         return rulesetDTO;
     }
@@ -414,6 +416,9 @@ public class ComplianceAPIUtil {
         // Track violated ruleset IDs for the current artifact
         Set<String> violatedRulesets = new HashSet<>();
 
+        // Compliance affecting severities are stored per ruleset, cached here for the duration of this artifact
+        Map<String, Set<RuleSeverity>> affectingSeveritiesByRuleset = new HashMap<>();
+
         // Retrieve rule violations categorized by severity for the current artifact
         Map<RuleSeverity, List<RuleViolation>> ruleViolationsBySeverity = complianceManager
                 .getSeverityBasedRuleViolationsForArtifact(artifactRefId, artifactType, organization);
@@ -434,9 +439,16 @@ public class ComplianceAPIUtil {
 
             ruleViolationCounts.add(violationCountDTO);
 
-            // Track the IDs of violated rulesets
+            // Violations of a non compliance affecting severity are still counted above, but they do not make the
+            // ruleset, and in turn the policy and the artifact, non-compliant. The severities are configured per
+            // ruleset, so each violated ruleset is resolved separately and the answers cached for this artifact.
             for (RuleViolation ruleViolation : ruleViolations) {
-                violatedRulesets.add(ruleViolation.getRulesetId());
+                String rulesetId = ruleViolation.getRulesetId();
+                Set<RuleSeverity> affectingSeverities = affectingSeveritiesByRuleset.computeIfAbsent(rulesetId,
+                        id -> resolveAffectingSeveritiesQuietly(id, organization));
+                if (APIMGovernanceUtil.isComplianceAffectingSeverity(severity, affectingSeverities)) {
+                    violatedRulesets.add(rulesetId);
+                }
             }
         }
 
@@ -574,11 +586,16 @@ public class ComplianceAPIUtil {
             }
         }
 
+        // Every violation is reported to the user, including the ones of a non compliance affecting severity, but
+        // only the compliance affecting ones decide whether the ruleset passed
         rulesetValidationResultDTO.setViolatedRules(violatedRules);
         rulesetValidationResultDTO.setFollowedRules(followedRules);
-        rulesetValidationResultDTO.setStatus(violatedRules.isEmpty() ?
-                RulesetValidationResultDTO.StatusEnum.PASSED :
-                RulesetValidationResultDTO.StatusEnum.FAILED);
+        Set<RuleSeverity> affectingSeverities = APIMGovernanceUtil.resolveComplianceAffectingSeverities(
+                rulesetManager.getComplianceAffectingSeverities(rulesetId, organization));
+        rulesetValidationResultDTO.setStatus(
+                APIMGovernanceUtil.filterComplianceAffectingViolations(ruleViolations, affectingSeverities).isEmpty()
+                        ? RulesetValidationResultDTO.StatusEnum.PASSED
+                        : RulesetValidationResultDTO.StatusEnum.FAILED);
 
         return rulesetValidationResultDTO;
     }
@@ -661,4 +678,25 @@ public class ComplianceAPIUtil {
         return summaryDTO;
     }
 
+    /**
+     * Resolve the compliance affecting severities of a ruleset without propagating a checked exception.
+     * <p>
+     * Used from the artifact listing, where a failure to read one ruleset must not fail the whole page. Falling back
+     * to every severity keeps the listing strict rather than silently reporting an artifact as compliant.
+     *
+     * @param rulesetId    Ruleset ID
+     * @param organization Organization
+     * @return Severities that affect compliance for the ruleset, every severity when it cannot be resolved
+     */
+    private static Set<RuleSeverity> resolveAffectingSeveritiesQuietly(String rulesetId, String organization) {
+
+        try {
+            return APIMGovernanceUtil.resolveComplianceAffectingSeverities(
+                    new RulesetManager().getComplianceAffectingSeverities(rulesetId, organization));
+        } catch (APIMGovernanceException e) {
+            log.warn("Failed to resolve compliance affecting severities for ruleset " + rulesetId
+                    + ". Treating every severity as compliance affecting", e);
+            return APIMGovernanceUtil.resolveComplianceAffectingSeverities(null);
+        }
+    }
 }

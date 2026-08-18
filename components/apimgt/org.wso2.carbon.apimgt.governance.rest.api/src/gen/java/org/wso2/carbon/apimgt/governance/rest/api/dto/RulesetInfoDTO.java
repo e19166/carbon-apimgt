@@ -129,6 +129,7 @@ return null;
     private String createdTime = null;
     private String updatedBy = null;
     private String updatedTime = null;
+    private String complianceAffectingSeverities = null;
 
   /**
    * UUID of the ruleset.
@@ -350,6 +351,24 @@ return null;
     this.updatedTime = updatedTime;
   }
 
+  /**
+   * Comma separated rule severities that make this ruleset fail. Violations of other severities are still reported but do not affect the compliance status. Empty or absent means every severity affects compliance. Only populated when the capability is available on the deployment. 
+   **/
+  public RulesetInfoDTO complianceAffectingSeverities(String complianceAffectingSeverities) {
+    this.complianceAffectingSeverities = complianceAffectingSeverities;
+    return this;
+  }
+
+  
+  @ApiModelProperty(example = "ERROR,WARN", value = "Comma separated rule severities that make this ruleset fail. Violations of other severities are still reported but do not affect the compliance status. Empty or absent means every severity affects compliance. Only populated when the capability is available on the deployment. ")
+  @JsonProperty("complianceAffectingSeverities")
+  public String getComplianceAffectingSeverities() {
+    return complianceAffectingSeverities;
+  }
+  public void setComplianceAffectingSeverities(String complianceAffectingSeverities) {
+    this.complianceAffectingSeverities = complianceAffectingSeverities;
+  }
+
 
   @Override
   public boolean equals(java.lang.Object o) {
@@ -371,12 +390,13 @@ return null;
         Objects.equals(createdBy, rulesetInfo.createdBy) &&
         Objects.equals(createdTime, rulesetInfo.createdTime) &&
         Objects.equals(updatedBy, rulesetInfo.updatedBy) &&
-        Objects.equals(updatedTime, rulesetInfo.updatedTime);
+        Objects.equals(updatedTime, rulesetInfo.updatedTime) &&
+        Objects.equals(complianceAffectingSeverities, rulesetInfo.complianceAffectingSeverities);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(id, name, description, ruleCategory, ruleType, artifactType, documentationLink, provider, createdBy, createdTime, updatedBy, updatedTime);
+    return Objects.hash(id, name, description, ruleCategory, ruleType, artifactType, documentationLink, provider, createdBy, createdTime, updatedBy, updatedTime, complianceAffectingSeverities);
   }
 
   @Override
@@ -396,6 +416,7 @@ return null;
     sb.append("    createdTime: ").append(toIndentedString(createdTime)).append("\n");
     sb.append("    updatedBy: ").append(toIndentedString(updatedBy)).append("\n");
     sb.append("    updatedTime: ").append(toIndentedString(updatedTime)).append("\n");
+    sb.append("    complianceAffectingSeverities: ").append(toIndentedString(complianceAffectingSeverities)).append("\n");
     sb.append("}");
     return sb.toString();
   }

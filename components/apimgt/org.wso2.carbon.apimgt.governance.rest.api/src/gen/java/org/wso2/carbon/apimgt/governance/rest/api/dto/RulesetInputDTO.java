@@ -126,6 +126,7 @@ return null;
     private ArtifactTypeEnum artifactType = null;
     private String documentationLink = null;
     private String provider = null;
+    private String complianceAffectingSeverities = null;
 
   /**
    * Name of the ruleset.
@@ -275,6 +276,24 @@ return null;
     this.provider = provider;
   }
 
+  /**
+   * Comma separated rule severities that make this ruleset fail, for example ERROR,WARN. Leave empty for every severity to affect compliance. Rejected when the capability is not available on the deployment. 
+   **/
+  public RulesetInputDTO complianceAffectingSeverities(String complianceAffectingSeverities) {
+    this.complianceAffectingSeverities = complianceAffectingSeverities;
+    return this;
+  }
+
+  
+  @ApiModelProperty(example = "ERROR,WARN", value = "Comma separated rule severities that make this ruleset fail, for example ERROR,WARN. Leave empty for every severity to affect compliance. Rejected when the capability is not available on the deployment. ")
+  @JsonProperty("complianceAffectingSeverities")
+  public String getComplianceAffectingSeverities() {
+    return complianceAffectingSeverities;
+  }
+  public void setComplianceAffectingSeverities(String complianceAffectingSeverities) {
+    this.complianceAffectingSeverities = complianceAffectingSeverities;
+  }
+
 
   @Override
   public boolean equals(java.lang.Object o) {
@@ -292,12 +311,13 @@ return null;
         Objects.equals(ruleType, rulesetInput.ruleType) &&
         Objects.equals(artifactType, rulesetInput.artifactType) &&
         Objects.equals(documentationLink, rulesetInput.documentationLink) &&
-        Objects.equals(provider, rulesetInput.provider);
+        Objects.equals(provider, rulesetInput.provider) &&
+        Objects.equals(complianceAffectingSeverities, rulesetInput.complianceAffectingSeverities);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(name, description, rulesetContent, ruleCategory, ruleType, artifactType, documentationLink, provider);
+    return Objects.hash(name, description, rulesetContent, ruleCategory, ruleType, artifactType, documentationLink, provider, complianceAffectingSeverities);
   }
 
   @Override
@@ -313,6 +333,7 @@ return null;
     sb.append("    artifactType: ").append(toIndentedString(artifactType)).append("\n");
     sb.append("    documentationLink: ").append(toIndentedString(documentationLink)).append("\n");
     sb.append("    provider: ").append(toIndentedString(provider)).append("\n");
+    sb.append("    complianceAffectingSeverities: ").append(toIndentedString(complianceAffectingSeverities)).append("\n");
     sb.append("}");
     return sb.toString();
   }

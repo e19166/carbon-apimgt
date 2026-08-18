@@ -38,9 +38,34 @@ tags:
     description: for accessing artifact compliance.
   - name: Policy Adherence
     description: for accessing policy adherence.
+  - name: Settings
+    description: Governance settings and available capabilities
   - name: Deprecated
     description: resources that are deprecated.
 paths:
+  /settings:
+    get:
+      tags:
+        - Settings
+      summary: Get governance settings
+      description: |
+        Retrieve governance settings, including which optional capabilities are available on this deployment.
+      operationId: getGovernanceSettings
+      responses:
+        200:
+          description: |
+            OK. Governance settings returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GovernanceSettings'
+        401:
+          $ref: '#/components/responses/Unauthorized'
+        500:
+          $ref: '#/components/responses/InternalServerError'
+      security:
+        - OAuth2Security:
+            - apim:gov_rule_read
   /rulesets:
     get:
       summary: Retrieves a list of rulesets.
@@ -1045,6 +1070,13 @@ components:
           type: string
           description: Entity or individual providing the ruleset.
           example: "TechWave"
+        complianceAffectingSeverities:
+          type: string
+          description: |
+            Comma separated rule severities that make this ruleset fail, for example ERROR,WARN. Leave empty
+            for every severity to affect compliance. Rejected when the capability is not available on the
+            deployment.
+          example: "ERROR,WARN"
       required:
         - name
         - rulesetContent
@@ -1121,11 +1153,27 @@ components:
           description: Timestamp when the ruleset was last updated.
           readOnly: true
           example: "2024-08-02T12:00:00Z"
+        complianceAffectingSeverities:
+          type: string
+          description: |
+            Comma separated rule severities that make this ruleset fail. Violations of other severities are still
+            reported but do not affect the compliance status. Empty or absent means every severity affects
+            compliance. Only populated when the capability is available on the deployment.
+          example: "ERROR,WARN"
       required:
         - name
         - ruleType
         - artifactType
         - provider
+    GovernanceSettings:
+      type: object
+      description: Governance settings and available capabilities.
+      properties:
+        complianceAffectingSeveritiesEnabled:
+          type: boolean
+          description: |
+            Whether per ruleset compliance affecting severity filtering is available on this deployment.
+          example: true
     APIMGovernancePolicy:
       type: object
       description: Detailed information about a governance policy.
