@@ -917,7 +917,7 @@ public class ComplianceMgtDAOImpl implements ComplianceMgtDAO {
             throws APIMGovernanceException {
         Set<String> artifactRefIds = new HashSet<>();
         try (Connection connection = APIMGovernanceDBUtil.getConnection()) {
-            if (GovernancePolicyMgtDAOImpl.isComplianceAffectingSeverityColumnPresent(connection)) {
+            if (GovernancePolicyMgtDAOImpl.isPerPolicySeverityFilteringEnabled()) {
                 try (PreparedStatement prepStmnt = connection
                         .prepareStatement(SQLConstants.GET_NON_COMPLIANT_ARTIFACTS_WITH_SEVERITY)) {
                     prepStmnt.setString(1, String.valueOf(artifactType));
@@ -977,7 +977,7 @@ public class ComplianceMgtDAOImpl implements ComplianceMgtDAO {
         Set<String> rulesetIds = new HashSet<>();
         try (Connection connection = APIMGovernanceDBUtil.getConnection()) {
             // Each branch passes a constant query, so the statements stay compile time constants
-            if (GovernancePolicyMgtDAOImpl.isComplianceAffectingSeverityColumnPresent(connection)) {
+            if (GovernancePolicyMgtDAOImpl.isPerPolicySeverityFilteringEnabled()) {
                 try (PreparedStatement prepStmnt = connection
                         .prepareStatement(SQLConstants.GET_FAILED_RULESET_RUNS_WITH_SEVERITY)) {
                     prepStmnt.setString(1, organization);
@@ -1011,7 +1011,7 @@ public class ComplianceMgtDAOImpl implements ComplianceMgtDAO {
                                                        String organization) throws APIMGovernanceException {
         Set<String> rulesetIds = new HashSet<>();
         try (Connection connection = APIMGovernanceDBUtil.getConnection()) {
-            if (GovernancePolicyMgtDAOImpl.isComplianceAffectingSeverityColumnPresent(connection)) {
+            if (GovernancePolicyMgtDAOImpl.isPerPolicySeverityFilteringEnabled()) {
                 try (PreparedStatement prepStmnt = connection
                         .prepareStatement(SQLConstants.GET_FAILED_RULESET_RUNS_FOR_ARTIFACT_WITH_SEVERITY)) {
                     prepStmnt.setString(1, artifactRefId);
