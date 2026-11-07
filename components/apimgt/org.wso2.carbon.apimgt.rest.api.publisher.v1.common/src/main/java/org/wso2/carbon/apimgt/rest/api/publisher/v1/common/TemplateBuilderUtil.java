@@ -50,6 +50,7 @@ import org.wso2.carbon.apimgt.api.model.APIProductIdentifier;
 import org.wso2.carbon.apimgt.api.model.APIProductResource;
 import org.wso2.carbon.apimgt.api.model.CORSConfiguration;
 import org.wso2.carbon.apimgt.api.model.Environment;
+import org.wso2.carbon.apimgt.api.model.OperationPolicy;
 import org.wso2.carbon.apimgt.api.model.SequenceBackendData;
 import org.wso2.carbon.apimgt.api.model.SimplifiedEndpoint;
 import org.wso2.carbon.apimgt.api.model.URITemplate;
@@ -94,6 +95,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import javax.xml.namespace.QName;
 import javax.xml.stream.XMLStreamException;
@@ -1181,7 +1183,44 @@ public class TemplateBuilderUtil {
         // Secure-vault mode: register each GCP service-account key chunk in the vault and assign the aliases
         // on the endpoints before the template is rendered, so it emits vault-lookups instead of chunk values.
         registerGCPServiceAccountKeyVaultChunks(type, endpoints, defaultEndpoint, api, gatewayAPIDTO);
-        String endpointsString = builder.getStringForEndpoints(type, endpoints, defaultEndpoint);
+
+        // Attach the fault handler only if the setting is on and the API has a Model Failover policy.
+        boolean faultFailoverEnabled = APIUtil.isFaultFailoverEnabled() && hasModelFailoverPolicy(api);
+        // Render, parse and serialize the fault sequence first, all inside the try. If its template is missing or
+        // broken (a customised or migrated api_templates folder), fall back to the old behaviour instead of
+        // failing the whole deployment.
+        String faultSeqName = getEndpointKey(api) + AIAPIConstants.ENDPOINT_FAULT_SEQUENCE + type;
+        String faultSeqContent = null;
+        if (faultFailoverEnabled) {
+            try {
+                String faultSeqString = builder.getStringForEndpointsFaultSequence(type);
+                OMElement faultSeqElement =
+                        APIUtil.buildOMElement(new ByteArrayInputStream(faultSeqString.getBytes()));
+                if (faultSeqElement != null) {
+                    QName nameAttribute = new QName(APIConstants.OM_ELEMENT_NAME);
+                    if (faultSeqElement.getAttribute(nameAttribute) != null) {
+                        faultSeqElement.getAttribute(nameAttribute).setAttributeValue(faultSeqName);
+                    }
+                    faultSeqContent = APIUtil.convertOMtoString(faultSeqElement);
+                }
+            } catch (Exception e) {
+                // Any failure (missing template, unparsable XML, ...) falls back to deploying without the feature.
+                Throwable cause = e.getCause() != null ? e.getCause() : e;
+                log.warn("Could not render the fault failover sequence for API " + api.getId() + " (" + type
+                        + "): " + cause + ". Deploying without fault-path failover.");
+                if (log.isDebugEnabled()) {
+                    log.debug("Fault failover sequence rendering failure", e);
+                }
+            }
+            if (faultSeqContent == null) {
+                faultFailoverEnabled = false;
+            }
+        }
+        if (log.isDebugEnabled()) {
+            log.debug("Fault failover enabled for API " + api.getId() + " (" + type + "): " + faultFailoverEnabled);
+        }
+
+        String endpointsString = builder.getStringForEndpoints(type, endpoints, defaultEndpoint, faultFailoverEnabled);
         OMElement endpointsElement = APIUtil.buildOMElement(
                 new ByteArrayInputStream(endpointsString.getBytes()));
 
@@ -1191,12 +1230,48 @@ public class TemplateBuilderUtil {
                 endpointsElement.getAttribute(nameAttribute).setAttributeValue(
                         getEndpointKey(api) + AIAPIConstants.ENDPOINT_SEQUENCE + type);
             }
+            // A customised (older) endpoints template may not wire in the fault sequence, which silently leaves
+            // fault-path failover off even though the fault sequence deploys.
+            if (faultFailoverEnabled && endpointsElement.getAttribute(new QName("onError")) == null) {
+                log.warn("The endpoints sequence for API " + api.getId() + " (" + type + ") has no onError "
+                        + "attribute, so fault-path failover will not run. Check that ai_api_endpoints_seq_template.xml "
+                        + "has not been customised from an older version.");
+            }
             GatewayContentDTO endpointSequence = new GatewayContentDTO();
             endpointSequence.setName(getEndpointKey(api) + AIAPIConstants.ENDPOINT_SEQUENCE + type);
             endpointSequence.setContent(APIUtil.convertOMtoString(endpointsElement));
             gatewayAPIDTO.setSequenceToBeAdd(
                     addGatewayContentToList(endpointSequence, gatewayAPIDTO.getSequenceToBeAdd()));
         }
+
+        if (faultFailoverEnabled) {
+            GatewayContentDTO faultSequence = new GatewayContentDTO();
+            faultSequence.setName(faultSeqName);
+            faultSequence.setContent(faultSeqContent);
+            gatewayAPIDTO.setSequenceToBeAdd(
+                    addGatewayContentToList(faultSequence, gatewayAPIDTO.getSequenceToBeAdd()));
+            if (log.isDebugEnabled()) {
+                log.debug("Added fault failover sequence: " + faultSeqName);
+            }
+        }
+    }
+
+    /**
+     * True if the API (API level or any resource) has a Model Failover policy attached.
+     *
+     * @param api The API being deployed.
+     * @return {@code true} if at least one Model Failover policy is attached.
+     */
+    private static boolean hasModelFailoverPolicy(API api) {
+
+        Stream<OperationPolicy> apiLevel = api.getApiPolicies() == null ? Stream.empty()
+                : api.getApiPolicies().stream();
+        Stream<OperationPolicy> resourceLevel = api.getUriTemplates() == null ? Stream.empty()
+                : api.getUriTemplates().stream()
+                        .filter(t -> t.getOperationPolicies() != null)
+                        .flatMap(t -> t.getOperationPolicies().stream());
+        return Stream.concat(apiLevel, resourceLevel)
+                .anyMatch(p -> AIAPIConstants.MODEL_FAILOVER_POLICY_NAME.equals(p.getPolicyName()));
     }
 
     /**

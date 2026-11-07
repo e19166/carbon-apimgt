@@ -29,6 +29,7 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.http.HttpStatus;
 import org.apache.synapse.ManagedLifecycle;
 import org.apache.synapse.MessageContext;
+import org.apache.synapse.SynapseConstants;
 import org.apache.synapse.commons.json.JsonUtil;
 import org.apache.synapse.core.SynapseEnvironment;
 import org.apache.synapse.core.axis2.Axis2MessageContext;
@@ -63,7 +64,9 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.Set;
+import java.util.TreeMap;
 import javax.ws.rs.core.MediaType;
 import javax.xml.stream.XMLStreamException;
 
@@ -74,6 +77,10 @@ import javax.xml.stream.XMLStreamException;
 public class AIAPIMediator extends AbstractMediator implements ManagedLifecycle {
 
     private static final Log log = LogFactory.getLog(AIAPIMediator.class);
+    // At most one "error before the call" WARN per endpoint in this interval, so a bad credential is visible
+    // without flooding the log.
+    private static final long PRE_CALL_WARN_INTERVAL_MILLIS = 60000L;
+    private static final Map<String, Long> LAST_PRE_CALL_WARN = new ConcurrentHashMap<>();
     private String llmProviderId;
     private String direction;
 
@@ -116,7 +123,7 @@ public class AIAPIMediator extends AbstractMediator implements ManagedLifecycle 
             LLMProviderInfo provider = DataHolder.getInstance().getLLMProviderConfigurations(this.llmProviderId);
             if (provider == null) {
                 log.error("No LLM provider found for provider ID: " + llmProviderId);
-                return false;
+                return earlyExit(messageContext);
             }
             LLMProviderConfiguration providerConfiguration = provider.getConfigurations();
             LLMProviderService llmProviderService =
@@ -124,7 +131,7 @@ public class AIAPIMediator extends AbstractMediator implements ManagedLifecycle 
 
             if (llmProviderService == null) {
                 log.error("LLM provider service not found for provider ID: " + llmProviderId);
-                return false;
+                return earlyExit(messageContext);
             }
 
             Map<String, String> metadataMap = new HashMap<>();
@@ -137,7 +144,7 @@ public class AIAPIMediator extends AbstractMediator implements ManagedLifecycle 
                                 * APIConstants.AIAPIConstants.MILLISECONDS_IN_SECOND);
             } catch (APIManagementException e) {
                 log.error("Error while retrieving REQUEST_TIMEOUT", e);
-                return false;
+                return earlyExit(messageContext);
             }
 
             if (APIConstants.AIAPIConstants.TRAFFIC_FLOW_DIRECTION_IN.equals(direction)) {
@@ -145,13 +152,36 @@ public class AIAPIMediator extends AbstractMediator implements ManagedLifecycle 
             } else if (APIConstants.AIAPIConstants.TRAFFIC_FLOW_DIRECTION_OUT.equals(direction)) {
                 processOutboundResponse(messageContext, providerConfiguration, llmProviderService, metadataMap,
                         provider);
+            } else if (APIConstants.AIAPIConstants.TRAFFIC_FLOW_DIRECTION_FAULT.equals(direction)) {
+                // Timeout / connection error, instead of an error reply.
+                if (log.isDebugEnabled()) {
+                    log.debug("AIAPIMediator: FAULT direction invoked.");
+                }
+                // An exception here is caught below; earlyExit delegates and returns true on the fault path.
+                processFaultFlow(messageContext, providerConfiguration, provider);
             }
         } catch (Exception e) {
             log.error("Error during mediation.", e);
-            return false;
+            return earlyExit(messageContext);
         }
 
         return true;
+    }
+
+    /**
+     * Result for an early exit from mediate(). On the fault path, delegate to the normal fault sequence and
+     * return true, since returning false would stop it and leave the client with no reply.
+     *
+     * @param messageContext The message context.
+     * @return {@code true} on the fault path, {@code false} otherwise (unchanged behaviour).
+     */
+    private boolean earlyExit(MessageContext messageContext) {
+
+        if (APIConstants.AIAPIConstants.TRAFFIC_FLOW_DIRECTION_FAULT.equals(direction)) {
+            delegate(messageContext);
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -368,22 +398,36 @@ public class AIAPIMediator extends AbstractMediator implements ManagedLifecycle 
         long requestTimeout = (policyConfig.getRequestTimeout() != null)
                 ? policyConfig.getRequestTimeout()
                 : APIUtil.getDefaultRequestTimeoutForFailoverConfigurations();
-        messageContext.setProperty(APIConstants.AIAPIConstants.REQUEST_TIMEOUT,
-                requestTimeout * APIConstants.AIAPIConstants.MILLISECONDS_IN_SECOND);
+        long requestTimeoutMillis = requestTimeout * APIConstants.AIAPIConstants.MILLISECONDS_IN_SECOND;
+        messageContext.setProperty(APIConstants.AIAPIConstants.REQUEST_TIMEOUT, requestTimeoutMillis);
+
+        // Re-applied on retry; mediate() resets REQUEST_TIMEOUT to the global default.
+        failoverConfigurations.put(APIConstants.AIAPIConstants.FAILOVER_REQUEST_TIMEOUT, requestTimeoutMillis);
 
         org.apache.axis2.context.MessageContext axis2MessageContext =
                 ((Axis2MessageContext) messageContext).getAxis2MessageContext();
 
         failoverConfigurations.put(APIConstants.AIAPIConstants.REQUEST_PAYLOAD,
                 JsonUtil.jsonPayloadToString(axis2MessageContext));
-        failoverConfigurations.put(APIConstants.AIAPIConstants.REQUEST_HEADERS,
-                axis2MessageContext.getProperty(org.apache.axis2.context.MessageContext.TRANSPORT_HEADERS));
+
+        // Copy, not a reference, so a later endpoint's auth mediator can't leak credentials into this map.
+        Object transportHeaders = axis2MessageContext.getProperty(
+                org.apache.axis2.context.MessageContext.TRANSPORT_HEADERS);
+        Map<String, String> headersCopy = copyHeaders(transportHeaders);
+        failoverConfigurations.put(APIConstants.AIAPIConstants.REQUEST_HEADERS, headersCopy);
+
         failoverConfigurations.put(APIConstants.AIAPIConstants.REQUEST_HTTP_METHOD,
                 axis2MessageContext.getProperty(PassThroughConstants.HTTP_METHOD));
         failoverConfigurations.put(APIConstants.AIAPIConstants.REQUEST_REST_URL_POSTFIX,
                 axis2MessageContext.getProperty(NhttpConstants.REST_URL_POSTFIX));
 
         messageContext.setProperty(APIConstants.AIAPIConstants.FAILOVER_CONFIGS, failoverConfigurations);
+
+        if (log.isDebugEnabled()) {
+            log.debug("Saved failover properties: targetEndpoint=" + targetModelEndpoint.getEndpointId()
+                    + ", fallbackCount=" + failoverEndpoints.size() + ", requestTimeoutMillis="
+                    + requestTimeoutMillis + ", headerCount=" + headersCopy.size());
+        }
     }
 
     /**
@@ -873,9 +917,31 @@ public class AIAPIMediator extends AbstractMediator implements ManagedLifecycle 
                                 boolean modifyRequestPayload)
             throws XMLStreamException, IOException {
 
+        handleFailover(messageContext, providerConfiguration, failoverConfigs, modifyRequestPayload, false);
+    }
+
+    /**
+     * Handles failover. The fault path suspends the previous fallback before the exhausted check, so the last
+     * fallback is suspended too; the error-reply path keeps the original order.
+     *
+     * @param isFaultPath Whether this is the fault (timeout / connection error) path.
+     */
+    private void handleFailover(MessageContext messageContext,
+                                LLMProviderConfiguration providerConfiguration,
+                                Map<String, Object> failoverConfigs,
+                                boolean modifyRequestPayload, boolean isFaultPath)
+            throws XMLStreamException, IOException {
+
         int currentEndpointIndex = getCurrentFailoverIndex(messageContext);
 
-        if (currentEndpointIndex == 0) {
+        // Only the fault path can fail before the call goes out; an error reply always means it was sent.
+        boolean callSent = !isFaultPath || wasCallSent(messageContext);
+        if (!callSent && log.isDebugEnabled()) {
+            log.debug("The LLM was not called (the error came before the call, or Synapse refused it); "
+                    + "not suspending the endpoint.");
+        }
+
+        if (currentEndpointIndex == 0 && callSent) {
             ModelEndpointDTO failoverTargetModelEndpoint =
                     (ModelEndpointDTO) failoverConfigs.get(APIConstants.AIAPIConstants.FAILOVER_TARGET_MODEL_ENDPOINT);
             Long suspendDuration = (Long) failoverConfigs.get(APIConstants.AIAPIConstants.SUSPEND_DURATION);
@@ -884,20 +950,31 @@ public class AIAPIMediator extends AbstractMediator implements ManagedLifecycle 
         }
         List<ModelEndpointDTO> failoverEndpoints =
                 (List<ModelEndpointDTO>) failoverConfigs.get(APIConstants.AIAPIConstants.FAILOVER_ENDPOINTS);
+
+        // Fault path: suspend before the exhausted check, so the last fallback gets suspended too.
+        if (isFaultPath && callSent) {
+            suspendPreviousFallback(messageContext, failoverConfigs, failoverEndpoints, currentEndpointIndex);
+        }
+
         if ((currentEndpointIndex > 0 && failoverEndpoints.isEmpty())
                 || currentEndpointIndex >= failoverEndpoints.size()) {
+            if (log.isDebugEnabled()) {
+                log.debug("Fallback endpoints exhausted at index " + currentEndpointIndex + "; rejecting.");
+            }
             messageContext.setProperty(APIConstants.AIAPIConstants.TARGET_ENDPOINT,
                     APIConstants.AIAPIConstants.REJECT_ENDPOINT);
             return;
         }
 
-        if (currentEndpointIndex > 0) {
-            ModelEndpointDTO previousEndpoint = failoverEndpoints.get(currentEndpointIndex - 1);
-            Long suspendDuration = (Long) failoverConfigs.get(APIConstants.AIAPIConstants.SUSPEND_DURATION);
-
-            suspendTargetEndpoint(messageContext, previousEndpoint.getEndpointId(),
-                    previousEndpoint.getModel(), suspendDuration);
+        // Error-reply path: original order, suspend after the exhausted check.
+        if (!isFaultPath && callSent) {
+            suspendPreviousFallback(messageContext, failoverConfigs, failoverEndpoints, currentEndpointIndex);
         }
+
+        if (log.isDebugEnabled()) {
+            log.debug("Failing over to fallback index " + currentEndpointIndex + " of " + failoverEndpoints.size());
+        }
+
         ModelEndpointDTO failoverEndpoint = failoverEndpoints.get(currentEndpointIndex);
         updateJsonPayloadWithRequestPayload(messageContext,
                 (String) failoverConfigs.get(APIConstants.AIAPIConstants.REQUEST_PAYLOAD));
@@ -923,7 +1000,202 @@ public class AIAPIMediator extends AbstractMediator implements ManagedLifecycle 
         }
 
         updateTargetEndpoint(messageContext, currentEndpointIndex + 1, failoverEndpoint);
+        applyFailoverRequestTimeout(messageContext, failoverConfigs);
         log.info("Failover activated, switching to endpoint with model " + failoverEndpoint.getModel());
+    }
+
+    /**
+     * Copies a header map into a new case-insensitive map, skipping null keys and values.
+     *
+     * @param headers The header map, or anything else (gives an empty copy).
+     * @return An independent copy of the headers.
+     */
+    private static Map<String, String> copyHeaders(Object headers) {
+
+        Map<String, String> copy = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        if (headers instanceof Map) {
+            ((Map<?, ?>) headers).forEach((key, value) -> {
+                if (key != null && value != null) {
+                    copy.put(String.valueOf(key), String.valueOf(value));
+                }
+            });
+        }
+        return copy;
+    }
+
+    /**
+     * Warns that an endpoint failed before the call went out (e.g. a bad credential on its auth step), at most once
+     * per interval per endpoint.
+     *
+     * @param messageContext  The message context of the faulted request.
+     * @param errorCodeProperty The error code of the fault.
+     */
+    private void warnErrorBeforeCall(MessageContext messageContext, Object errorCodeProperty) {
+
+        String endpoint = String.valueOf(messageContext.getProperty(APIConstants.AIAPIConstants.TARGET_ENDPOINT));
+        long now = System.currentTimeMillis();
+        Long last = LAST_PRE_CALL_WARN.get(endpoint);
+        if (last == null || now - last >= PRE_CALL_WARN_INTERVAL_MILLIS) {
+            LAST_PRE_CALL_WARN.put(endpoint, now);
+            log.warn("Endpoint '" + endpoint + "' failed before the LLM call (error code " + errorCodeProperty
+                    + "), e.g. a bad credential. Failing over; the endpoint is not suspended. Repeats are logged at "
+                    + "DEBUG for " + PRE_CALL_WARN_INTERVAL_MILLIS / 1000 + " s.");
+        } else if (log.isDebugEnabled()) {
+            log.debug("Endpoint '" + endpoint + "' failed before the LLM call (error code " + errorCodeProperty + ").");
+        }
+    }
+
+    /**
+     * Tells the fault sequence to run the API's normal fault sequence instead of retrying.
+     *
+     * @param messageContext The message context of the faulted request.
+     */
+    private void delegate(MessageContext messageContext) {
+
+        messageContext.setProperty(APIConstants.AIAPIConstants.FAULT_FAILOVER_ACTION,
+                APIConstants.AIAPIConstants.FAULT_FAILOVER_ACTION_DELEGATE);
+    }
+
+    /**
+     * Whether a faulted request actually reached the LLM. False when the error came before the call (e.g. an auth
+     * mediator, marker {@code false}), or when Synapse refused the call because the endpoint was already suspended
+     * (error 303001): nothing was sent in either case. Only meaningful on the fault path.
+     *
+     * @param messageContext The message context of the faulted request.
+     * @return {@code true} if the call was sent.
+     */
+    private boolean wasCallSent(MessageContext messageContext) {
+
+        return !APIConstants.AIAPIConstants.LLM_CALL_NOT_SENT.equals(String.valueOf(messageContext.getProperty(
+                APIConstants.AIAPIConstants.LLM_CALL_SENT)))
+                && !String.valueOf(SynapseConstants.ENDPOINT_ADDRESS_NONE_READY)
+                .equals(String.valueOf(messageContext.getProperty(SynapseConstants.ERROR_CODE)));
+    }
+
+    private void suspendPreviousFallback(MessageContext messageContext, Map<String, Object> failoverConfigs,
+                                         List<ModelEndpointDTO> failoverEndpoints, int currentEndpointIndex) {
+
+        if (currentEndpointIndex > 0 && !failoverEndpoints.isEmpty()) {
+            ModelEndpointDTO previousEndpoint = failoverEndpoints.get(currentEndpointIndex - 1);
+            Long suspendDuration = (Long) failoverConfigs.get(APIConstants.AIAPIConstants.SUSPEND_DURATION);
+            suspendTargetEndpoint(messageContext, previousEndpoint.getEndpointId(),
+                    previousEndpoint.getModel(), suspendDuration);
+        }
+    }
+
+    /**
+     * Re-applies the policy's own request timeout before a retry call.
+     *
+     * @param messageContext  The message context for the retry call.
+     * @param failoverConfigs The saved failover configuration for this request.
+     */
+    private void applyFailoverRequestTimeout(MessageContext messageContext, Map<String, Object> failoverConfigs) {
+
+        Object savedTimeout = failoverConfigs.get(APIConstants.AIAPIConstants.FAILOVER_REQUEST_TIMEOUT);
+        if (savedTimeout != null) {
+            messageContext.setProperty(APIConstants.AIAPIConstants.REQUEST_TIMEOUT, savedTimeout);
+            if (log.isDebugEnabled()) {
+                log.debug("Re-applied failover request timeout: " + savedTimeout);
+            }
+        }
+    }
+
+    /**
+     * Handles a timeout or connection error. If a Model Failover policy applies, reuses
+     * {@link #handleFailover} to suspend the failed endpoint and retry on the next one.
+     *
+     * @param messageContext        The message context of the faulted request.
+     * @param providerConfiguration The configuration of the LLM provider.
+     * @param provider              The LLM service provider.
+     * @throws XMLStreamException If an error occurs while processing the XML stream.
+     * @throws IOException        If an I/O error occurs.
+     */
+    private void processFaultFlow(MessageContext messageContext, LLMProviderConfiguration providerConfiguration,
+                                  LLMProviderInfo provider) throws XMLStreamException, IOException {
+
+        Map<String, Object> failoverConfigs = null;
+        if (messageContext.getProperty(APIConstants.AIAPIConstants.FAILOVER_CONFIGS) != null) {
+            failoverConfigs =
+                    (Map<String, Object>) messageContext.getProperty(APIConstants.AIAPIConstants.FAILOVER_CONFIGS);
+        }
+
+        // No Model Failover policy: delegate. Otherwise any error fails over, no per-code selection.
+        if (failoverConfigs == null) {
+            if (log.isDebugEnabled()) {
+                log.debug("No Model Failover policy for this request; delegating to the normal fault sequence.");
+            }
+            delegate(messageContext);
+            return;
+        }
+
+        // The model already replied and a later mediator failed. Failing over would send the prompt again
+        // (a duplicate, paid call), so hand the error to the normal fault sequence.
+        if (APIConstants.AIAPIConstants.LLM_CALL_REPLIED.equals(String.valueOf(
+                messageContext.getProperty(APIConstants.AIAPIConstants.LLM_CALL_SENT)))) {
+            if (log.isDebugEnabled()) {
+                log.debug("Fault came after the LLM replied; delegating to the normal fault sequence.");
+            }
+            delegate(messageContext);
+            return;
+        }
+
+        Object errorCodeProperty = messageContext.getProperty(SynapseConstants.ERROR_CODE);
+        String faultMessage = "LLM endpoint fault (error code " + errorCodeProperty
+                + "), activating fault-path failover";
+        // Per-request lines stay at DEBUG: with suspendDuration=0 a dead primary faults on every request, and the
+        // existing INFO "Failover activated" in handleFailover is the one visible signal. The exception is an error
+        // before the call (e.g. a bad credential), which gets a rate-limited WARN so it is not hidden.
+        if (!wasCallSent(messageContext) && APIConstants.AIAPIConstants.LLM_CALL_NOT_SENT.equals(String.valueOf(
+                messageContext.getProperty(APIConstants.AIAPIConstants.LLM_CALL_SENT)))) {
+            warnErrorBeforeCall(messageContext, errorCodeProperty);
+        } else if (log.isDebugEnabled()) {
+            log.debug(faultMessage);
+        }
+
+        boolean isProviderAzureV1 = isAzureV1Provider(provider);
+        if (log.isDebugEnabled()) {
+            log.debug("Calling handleFailover for error code " + errorCodeProperty + ", isProviderAzureV1="
+                    + isProviderAzureV1);
+        }
+        handleFailover(messageContext, providerConfiguration, failoverConfigs, !isProviderAzureV1, true);
+
+        // handleFailover rejects once every fallback is exhausted; delegate instead of retrying into a dead end.
+        if (APIConstants.AIAPIConstants.REJECT_ENDPOINT.equals(
+                messageContext.getProperty(APIConstants.AIAPIConstants.TARGET_ENDPOINT))) {
+            if (log.isDebugEnabled()) {
+                log.debug("Fallback endpoints exhausted; delegating to the normal fault sequence.");
+            }
+            delegate(messageContext);
+            return;
+        }
+
+        // Clear the error markers so a successful retry isn't logged as a fault.
+        clearFaultProperties(messageContext);
+
+        if (log.isDebugEnabled()) {
+            log.debug("Fault-path failover retry armed. New target: "
+                    + messageContext.getProperty(APIConstants.AIAPIConstants.TARGET_ENDPOINT) + ", retryCount: "
+                    + messageContext.getProperty("retryCount"));
+        }
+        messageContext.setProperty(APIConstants.AIAPIConstants.FAULT_FAILOVER_ACTION,
+                APIConstants.AIAPIConstants.FAULT_FAILOVER_ACTION_RETRY);
+    }
+
+    /**
+     * Removes the error markers Synapse set for this fault.
+     *
+     * @param messageContext The message context to clean up.
+     */
+    private void clearFaultProperties(MessageContext messageContext) {
+
+        Set keySet = messageContext.getPropertyKeySet();
+        keySet.remove(SynapseConstants.ERROR_CODE);
+        keySet.remove(SynapseConstants.BASE_ERROR_CODE);
+        keySet.remove(SynapseConstants.ERROR_MESSAGE);
+        keySet.remove(SynapseConstants.ERROR_DETAIL);
+        keySet.remove(SynapseConstants.ERROR_EXCEPTION);
+        keySet.remove(SynapseConstants.PROTOCOL_STATE_ON_FAILURE);
+        keySet.remove(SynapseConstants.SENDING_FAULT);
     }
 
     /**
@@ -985,8 +1257,18 @@ public class AIAPIMediator extends AbstractMediator implements ManagedLifecycle 
                 failoverConfigs.get(APIConstants.AIAPIConstants.REQUEST_REST_URL_POSTFIX));
         axis2Ctx.setProperty(PassThroughConstants.HTTP_METHOD,
                 failoverConfigs.get(APIConstants.AIAPIConstants.REQUEST_HTTP_METHOD));
-        axis2Ctx.setProperty(APIMgtGatewayConstants.TRANSPORT_HEADERS,
-                failoverConfigs.get(APIConstants.AIAPIConstants.REQUEST_HEADERS));
+
+        // Fresh copy each retry, not the saved map itself, so one endpoint's auth header can't stick around.
+        Object savedHeaders = failoverConfigs.get(APIConstants.AIAPIConstants.REQUEST_HEADERS);
+        Map<String, String> headersCopy = copyHeaders(savedHeaders);
+        axis2Ctx.setProperty(APIMgtGatewayConstants.TRANSPORT_HEADERS, headersCopy);
+
+        if (log.isDebugEnabled()) {
+            log.debug("Restored request metadata for retry: method="
+                    + failoverConfigs.get(APIConstants.AIAPIConstants.REQUEST_HTTP_METHOD) + ", urlPostfix="
+                    + failoverConfigs.get(APIConstants.AIAPIConstants.REQUEST_REST_URL_POSTFIX)
+                    + ", headerCount=" + headersCopy.size());
+        }
     }
 
     /**

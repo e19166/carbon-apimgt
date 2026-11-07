@@ -3173,6 +3173,25 @@ public class APIManagerConfiguration {
                         log.warn("Invalid value for defaultRequestTimeout.", e);
                     }
                 }
+                OMElement enableFaultFailoverElement =
+                        failoverConfigurationsElement.getFirstChildWithName(new QName(APIConstants.AI
+                                .AI_CONFIGURATION_FAILOVER_CONFIGURATIONS_ENABLE_FAULT_FAILOVER));
+                if (enableFaultFailoverElement != null) {
+                    String enableFaultFailoverText = StringUtils.trimToEmpty(enableFaultFailoverElement.getText());
+                    if ("true".equalsIgnoreCase(enableFaultFailoverText)
+                            || "false".equalsIgnoreCase(enableFaultFailoverText)) {
+                        boolean enableFaultFailover = Boolean.parseBoolean(enableFaultFailoverText);
+                        failoverConfigurations.setFaultFailoverEnabled(enableFaultFailover);
+                        if (log.isDebugEnabled()) {
+                            log.debug("Read EnableFaultFailover from deployment config: " + enableFaultFailover);
+                        }
+                    } else {
+                        // Anything else (a typo, "yes", blank) keeps the default instead of silently turning it off.
+                        log.warn("Invalid value '" + enableFaultFailoverText + "' for EnableFaultFailover. "
+                                + "Expected true or false. Keeping the default: "
+                                + failoverConfigurations.isFaultFailoverEnabled());
+                    }
+                }
                 aiapiConfigurationsDTO.setFailoverConfigurations(failoverConfigurations);
             } else {
                 log.debug("Failover configurations are not defined in AI configuration.");

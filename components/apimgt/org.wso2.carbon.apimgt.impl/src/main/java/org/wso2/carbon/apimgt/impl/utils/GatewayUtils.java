@@ -268,5 +268,16 @@ public class GatewayUtils {
                         + APIConstants.APIEndpoint.SANDBOX;
         gatewayAPIDTO.setSequencesToBeRemove(
                 addStringToList(sandboxEndpointSequence, gatewayAPIDTO.getSequencesToBeRemove()));
+
+        // Remove the fault sequences too, or they're orphaned in gateway memory. Harmless if they don't exist.
+        // Deploy names them "<name>--v<version>...", which getEndpointSequenceName doesn't produce.
+        String faultSequencePrefix = api.getId().getApiName() + "--v" + api.getId().getVersion()
+                + AIAPIConstants.ENDPOINT_FAULT_SEQUENCE;
+        String productionFaultSequence = faultSequencePrefix + APIConstants.APIEndpoint.PRODUCTION;
+        gatewayAPIDTO.setSequencesToBeRemove(
+                addStringToList(productionFaultSequence, gatewayAPIDTO.getSequencesToBeRemove()));
+        String sandboxFaultSequence = faultSequencePrefix + APIConstants.APIEndpoint.SANDBOX;
+        gatewayAPIDTO.setSequencesToBeRemove(
+                addStringToList(sandboxFaultSequence, gatewayAPIDTO.getSequencesToBeRemove()));
     }
 }

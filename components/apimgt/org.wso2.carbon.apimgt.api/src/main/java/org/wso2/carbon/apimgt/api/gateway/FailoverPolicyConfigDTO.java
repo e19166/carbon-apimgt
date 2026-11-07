@@ -23,7 +23,7 @@ package org.wso2.carbon.apimgt.api.gateway;
  */
 public class FailoverPolicyConfigDTO {
 
-    private static final long DEFAULT_REQUEST_TIMEOUT = 30000L;
+    private static final long DEFAULT_REQUEST_TIMEOUT = 30L;
     private static final long DEFAULT_SUSPEND_DURATION = 0L;
     private FailoverPolicyDeploymentConfigDTO production;
     private FailoverPolicyDeploymentConfigDTO sandbox;

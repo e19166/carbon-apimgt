@@ -3957,6 +3957,33 @@ public final class APIUtil {
     }
 
     /**
+     * Whether fault-path failover is enabled. Defaults to {@code true} when unconfigured.
+     *
+     * @return {@code true} if fault-path failover is enabled.
+     */
+    public static boolean isFaultFailoverEnabled() {
+
+        APIManagerConfigurationService configService =
+                ServiceReferenceHolder.getInstance().getAPIManagerConfigurationService();
+
+        if (configService == null) {
+            log.warn("API Manager Configuration Service is not available. Defaulting fault-path failover to on.");
+            return true;
+        }
+
+        AIAPIConfigurationsDTO aiConfig = configService.getAPIManagerConfiguration().getAiApiConfigurationsDTO();
+        if (aiConfig == null || aiConfig.getFailoverConfigurations() == null) {
+            return true;
+        }
+
+        boolean enabled = aiConfig.getFailoverConfigurations().isFaultFailoverEnabled();
+        if (log.isDebugEnabled()) {
+            log.debug("Fault-path failover config (EnableFaultFailover): " + enabled);
+        }
+        return enabled;
+    }
+
+    /**
      * Retrieves the default request timeout for AI APIs.
      *
      * @return The default request timeout in milliseconds.
