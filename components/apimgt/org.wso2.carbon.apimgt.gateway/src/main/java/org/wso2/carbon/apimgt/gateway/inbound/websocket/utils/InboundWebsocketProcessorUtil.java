@@ -55,6 +55,8 @@ import org.wso2.carbon.utils.multitenancy.MultitenantConstants;
 import org.wso2.carbon.utils.multitenancy.MultitenantUtils;
 
 import java.io.UnsupportedEncodingException;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.security.NoSuchAlgorithmException;
 import java.util.List;
 import java.util.Map;
@@ -74,10 +76,11 @@ public class InboundWebsocketProcessorUtil {
      * @param authenticationContext Validated AuthenticationContext
      * @param inboundMessageContext InboundMessageContext
      * @return true if authenticated
+     * @implNote Tenancy: none of its own — runs inside the caller's tenant flow (the authenticators run under
+     *           isAuthenticated()/authenticateToken(), which establish it).
      */
     public static boolean validateAuthenticationContext(AuthenticationContext authenticationContext,
                                                         InboundMessageContext inboundMessageContext) {
-
         if (authenticationContext == null || !authenticationContext.isAuthenticated()) {
             return false;
         }
@@ -118,16 +121,29 @@ public class InboundWebsocketProcessorUtil {
      * @return true if authorized
      * @throws APIManagementException if an internal error occurs
      * @throws APISecurityException   if authorization fails
+     * @implNote Tenancy: establishes and balances its own carbon tenant flow from the request context; it is the
+     *           worker that validateScopes() delegates to.
      */
     public static boolean authorizeGraphQLSubscriptionEvents(String matchingResource,
                                                              InboundMessageContext inboundMessageContext)
             throws APIManagementException, APISecurityException {
-
-        JWTValidator jwtValidator = new JWTValidator(new APIKeyValidator(), inboundMessageContext.getTenantDomain());
-        jwtValidator.validateScopesForGraphQLSubscriptions(inboundMessageContext.getApiContext(),
-                inboundMessageContext.getVersion(), matchingResource, inboundMessageContext.getSignedJWTInfo(),
-                inboundMessageContext.getAuthContext());
-        return true;
+        // Subscription-event scope validation runs on the shared netty event-loop thread and must not rely on
+        // the tenant domain left there by a previous request. validateScopesForGraphQLSubscriptions reads the
+        // tenant from the thread-local carbon context, so establish (and always clear) the tenant flow from this
+        // request's own context — otherwise a null/stale tenant resolves the wrong key manager (or NPEs).
+        try {
+            PrivilegedCarbonContext.startTenantFlow();
+            PrivilegedCarbonContext.getThreadLocalCarbonContext().setTenantDomain(
+                    inboundMessageContext.getTenantDomain(), true);
+            JWTValidator jwtValidator = new JWTValidator(new APIKeyValidator(),
+                    inboundMessageContext.getTenantDomain());
+            jwtValidator.validateScopesForGraphQLSubscriptions(inboundMessageContext.getApiContext(),
+                    inboundMessageContext.getVersion(), matchingResource, inboundMessageContext.getSignedJWTInfo(),
+                    inboundMessageContext.getAuthContext());
+            return true;
+        } finally {
+            PrivilegedCarbonContext.endTenantFlow();
+        }
     }
 
     /**
@@ -180,11 +196,11 @@ public class InboundWebsocketProcessorUtil {
      * @param inboundMessageContext InboundMessageContext
      * @param operationId           Operation ID
      * @return InboundProcessorResponseDTO
+     * @implNote Tenancy: none of its own — delegates to doThrottle(), which establishes the tenant flow.
      */
     public static InboundProcessorResponseDTO doThrottleForGraphQL(int msgSize, VerbInfoDTO verbInfoDTO,
                                                                    InboundMessageContext inboundMessageContext,
                                                                    String operationId) {
-
         GraphQLProcessorResponseDTO responseDTO = new GraphQLProcessorResponseDTO();
         responseDTO.setId(operationId);
         return InboundWebsocketProcessorUtil.doThrottle(msgSize, verbInfoDTO, inboundMessageContext, responseDTO);
@@ -197,23 +213,18 @@ public class InboundWebsocketProcessorUtil {
      * @param verbInfoDTO           VerbInfoDTO for invoking operation. Pass null for websocket API throttling.
      * @param inboundMessageContext InboundMessageContext
      * @return false if throttled
+     * @implNote Tenancy: establishes and balances its own carbon tenant flow from the request context.
      */
     public static InboundProcessorResponseDTO doThrottle(int msgSize, VerbInfoDTO verbInfoDTO,
                                                          InboundMessageContext inboundMessageContext,
                                                          InboundProcessorResponseDTO responseDTO) {
-
         APIKeyValidationInfoDTO infoDTO = inboundMessageContext.getInfoDTO();
         String applicationLevelTier = infoDTO.getApplicationTier();
         String apiLevelTier = infoDTO.getApiTier() == null && verbInfoDTO == null ? APIConstants.UNLIMITED_TIER
                 : infoDTO.getApiTier();
         String subscriptionLevelTier = infoDTO.getTier();
         String resourceLevelTier;
-        String authorizedUser;
-        if (MultitenantConstants.SUPER_TENANT_DOMAIN_NAME.equalsIgnoreCase(infoDTO.getSubscriberTenantDomain())) {
-            authorizedUser = infoDTO.getSubscriber() + "@" + infoDTO.getSubscriberTenantDomain();
-        } else {
-            authorizedUser = infoDTO.getSubscriber();
-        }
+        String authorizedUser = infoDTO.getEndUserName();
         String apiName = infoDTO.getApiName();
         String apiVersion = inboundMessageContext.getVersion();
         String appTenant = infoDTO.getSubscriberTenantDomain();
@@ -335,24 +346,59 @@ public class InboundWebsocketProcessorUtil {
     /**
      * Remove token query parameter from full request path in InboundMessageContext.
      *
-     * @param parameters            Query parameters
+     * The query is rewritten by copying the pairs that are kept across byte for byte, so percent encoding is
+     * preserved and repeated parameters survive. Rebuilding it from the decoded parameter map loses both:
+     * QueryStringDecoder decodes the values, and a map holds only one value per name.
+     *
+     * @param parameters            Query parameters. Retained for backward compatibility and no longer read,
+     *                              since the query is rewritten from the raw request path.
      * @param inboundMessageContext InboundMessageContext
+     * @param tokenType             Name of the query parameter to remove
      */
     public static void removeTokenFromQuery(Map<String, List<String>> parameters,
                                             InboundMessageContext inboundMessageContext, String tokenType) {
 
         String fullRequestPath = inboundMessageContext.getFullRequestPath();
-        StringBuilder queryBuilder = new StringBuilder(fullRequestPath.substring(0, fullRequestPath.indexOf('?') + 1));
-
-        for (Map.Entry<String, List<String>> entry : parameters.entrySet()) {
-            if (!tokenType.equals(entry.getKey())) {
-                queryBuilder.append(entry.getKey()).append('=').append(entry.getValue().get(0)).append('&');
-            }
+        int queryStart = fullRequestPath == null ? -1 : fullRequestPath.indexOf('?');
+        if (queryStart < 0) {
+            return;
         }
+        StringBuilder retained = new StringBuilder();
+        for (String pair : fullRequestPath.substring(queryStart + 1).split("[&;]")) {
+            // QueryStringDecoder skips a leading '=', so "=access_token=x" parses as the name access_token
+            String named = pair.startsWith("=") ? pair.substring(1) : pair;
+            int equals = named.indexOf('=');
+            String name = decodeQueryParamName(equals < 0 ? named : named.substring(0, equals));
+            if (name.isEmpty() || tokenType.equals(name)) {
+                continue;
+            }
+            if (retained.length() > 0) {
+                retained.append('&');
+            }
+            retained.append(pair);
+        }
+        String path = fullRequestPath.substring(0, queryStart);
+        inboundMessageContext.setFullRequestPath(retained.length() == 0 ? path : path + '?' + retained);
+    }
 
-        // remove trailing '?' or '&' from the built string
-        fullRequestPath = queryBuilder.substring(0, queryBuilder.length() - 1);
-        inboundMessageContext.setFullRequestPath(fullRequestPath);
+    /**
+     * Decodes a query parameter name so that encoded forms of the same name compare equal. The credential
+     * was located with QueryStringDecoder, which decodes names, so comparing raw text here would leave an
+     * encoded form of that credential in the query.
+     *
+     * @param name raw query parameter name as it appears in the request path
+     * @return the decoded name, or the raw name when it cannot be decoded
+     */
+    private static String decodeQueryParamName(String name) {
+
+        if (name.indexOf('%') < 0 && name.indexOf('+') < 0) {
+            return name;
+        }
+        try {
+            return URLDecoder.decode(name, StandardCharsets.UTF_8.name());
+        } catch (UnsupportedEncodingException | IllegalArgumentException e) {
+            return name;
+        }
     }
 
     /**
@@ -361,9 +407,9 @@ public class InboundWebsocketProcessorUtil {
      * @param inboundMessageContext InboundMessageContext
      * @return whether authenticated or not
      * @throws APISecurityException   if authentication fails
+     * @implNote Tenancy: establishes and balances its own carbon tenant flow from the request context.
      */
     public static boolean isAuthenticated(InboundMessageContext inboundMessageContext) throws APISecurityException {
-
         try {
             PrivilegedCarbonContext.startTenantFlow();
             PrivilegedCarbonContext.getThreadLocalCarbonContext().setTenantDomain(
@@ -382,10 +428,21 @@ public class InboundWebsocketProcessorUtil {
      *
      * @param inboundMessageContext InboundMessageContext
      * @return InboundProcessorResponseDTO
+     * @implNote Tenancy: establishes and balances its own carbon tenant flow from the request context.
      */
     public static InboundProcessorResponseDTO authenticateToken(InboundMessageContext inboundMessageContext)
             throws APISecurityException {
-        return authenticate(inboundMessageContext);
+        // Frame authentication runs on the shared netty event-loop thread and must not rely on the
+        // tenant domain left there by a previous request's handshake. Establish (and always clear) the
+        // tenant flow from this request's own context so the correct key manager is resolved.
+        try {
+            PrivilegedCarbonContext.startTenantFlow();
+            PrivilegedCarbonContext.getThreadLocalCarbonContext().setTenantDomain(
+                    inboundMessageContext.getTenantDomain(), true);
+            return authenticate(inboundMessageContext);
+        } finally {
+            PrivilegedCarbonContext.endTenantFlow();
+        }
     }
 
     /**
@@ -393,6 +450,7 @@ public class InboundWebsocketProcessorUtil {
      *
      * @param inboundMessageContext InboundMessageContext
      * @return InboundProcessorResponseDTO
+     * @implNote Tenancy: none of its own — runs inside the caller's tenant flow (isAuthenticated()/authenticateToken()).
      */
     public static InboundProcessorResponseDTO authenticate(InboundMessageContext inboundMessageContext)
             throws APISecurityException {
@@ -523,10 +581,11 @@ public class InboundWebsocketProcessorUtil {
      * @param subscriptionOperation Subscription operation
      * @param operationId           GraphQL message Id
      * @return InboundProcessorResponseDTO
+     * @implNote Tenancy: none of its own — delegates to authorizeGraphQLSubscriptionEvents(), which establishes
+     *           the tenant flow.
      */
     public static InboundProcessorResponseDTO validateScopes(InboundMessageContext inboundMessageContext,
                                                              String subscriptionOperation, String operationId) {
-
         InboundProcessorResponseDTO responseDTO = new GraphQLProcessorResponseDTO();
         if (inboundMessageContext.isJWTToken()) { // scope validation not supported for Opaque tokens with gql subs
             // validate scopes based on subscription payload

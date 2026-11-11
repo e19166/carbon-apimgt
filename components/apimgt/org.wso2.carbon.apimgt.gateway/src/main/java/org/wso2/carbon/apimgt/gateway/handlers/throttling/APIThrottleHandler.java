@@ -56,6 +56,7 @@ import org.wso2.carbon.apimgt.gateway.handlers.security.APISecurityUtils;
 import org.wso2.carbon.apimgt.gateway.handlers.security.AuthenticationContext;
 import org.wso2.carbon.apimgt.gateway.internal.ServiceReferenceHolder;
 import org.wso2.carbon.apimgt.gateway.utils.GatewayUtils;
+import org.wso2.carbon.apimgt.gateway.utils.TelemetryLogUtil;
 import org.wso2.carbon.apimgt.impl.APIConstants;
 import org.wso2.carbon.apimgt.impl.dto.VerbInfoDTO;
 import org.wso2.carbon.apimgt.impl.utils.APIDescriptionGenUtil;
@@ -167,6 +168,7 @@ public class APIThrottleHandler extends AbstractHandler {
         long executionStartTime = System.nanoTime();
         TracingSpan throttlingLatencyTracingSpan = null;
         TelemetrySpan throttlingLatencySpan = null;
+        TelemetryLogUtil.TracingIds previousTracingIds = null;
         if (TelemetryUtil.telemetryEnabled()) {
             TelemetrySpan responseLatencySpan =
                     (TelemetrySpan) messageContext.getProperty(APIMgtGatewayConstants.RESOURCE_SPAN);
@@ -182,6 +184,7 @@ public class APIThrottleHandler extends AbstractHandler {
                     tracer);
         }
         try {
+            previousTracingIds = TelemetryLogUtil.enterSpan(throttlingLatencySpan);
             return doThrottle(messageContext);
         } catch (SynapseException e) {
             if (TelemetryUtil.telemetryEnabled()) {
@@ -197,6 +200,7 @@ public class APIThrottleHandler extends AbstractHandler {
                     TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - executionStartTime));
             context.stop();
             if (TelemetryUtil.telemetryEnabled()) {
+                TelemetryLogUtil.exitSpan(previousTracingIds);
                 TelemetryUtil.finishSpan(throttlingLatencySpan);
             } else if (Util.tracingEnabled()) {
                 Util.finishSpan(throttlingLatencyTracingSpan);
@@ -324,7 +328,11 @@ public class APIThrottleHandler extends AbstractHandler {
             // the payload.
             log.error("Error occurred while consuming and discarding the message", axisFault);
         }
-        Mediator sequence = messageContext.getSequence(APIThrottleConstants.API_THROTTLE_OUT_HANDLER);
+        // Publish the error flow type so any error sequence can branch on it.
+        messageContext.setProperty(APIMgtGatewayConstants.API_ERROR_TYPE,
+                APIMgtGatewayConstants.API_ERROR_TYPE_THROTTLE);
+        Mediator sequence = GatewayUtils.getErrorResponseFormatterSequence(messageContext,
+                APIThrottleConstants.API_THROTTLE_OUT_HANDLER);
 
         // Invoke the custom error handler specified by the user
         if (sequence != null && !sequence.mediate(messageContext)) {

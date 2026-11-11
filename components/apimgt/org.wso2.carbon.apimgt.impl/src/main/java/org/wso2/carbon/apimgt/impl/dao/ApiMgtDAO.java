@@ -4723,44 +4723,25 @@ public class ApiMgtDAO {
     public Application[] getAllApplicationsOfTenantForMigration(String appTenantDomain) throws
             APIManagementException {
 
-        Connection connection;
-        PreparedStatement prepStmt = null;
-        ResultSet rs;
-        Application[] applications = null;
         String sqlQuery = SQLConstants.GET_SIMPLE_APPLICATIONS;
-
-        String tenantFilter = "AND SUB.TENANT_ID=?";
-        sqlQuery += tenantFilter;
-        try {
-            connection = APIMgtDBUtil.getConnection();
-
-            int appTenantId = APIUtil.getTenantIdFromTenantDomain(appTenantDomain);
-            prepStmt = connection.prepareStatement(sqlQuery);
+        ArrayList<Application> applicationsList = new ArrayList<Application>();
+        int appTenantId = APIUtil.getTenantIdFromTenantDomain(appTenantDomain);
+        try (Connection connection = APIMgtDBUtil.getConnection();
+             PreparedStatement prepStmt = connection.prepareStatement(sqlQuery)) {
             prepStmt.setInt(1, appTenantId);
-            rs = prepStmt.executeQuery();
-
-            ArrayList<Application> applicationsList = new ArrayList<Application>();
-            Application application;
-            while (rs.next()) {
-                application = new Application(Integer.parseInt(rs.getString("APPLICATION_ID")));
-                application.setName(rs.getString("NAME"));
-                application.setOwner(rs.getString("CREATED_BY"));
-                applicationsList.add(application);
-            }
-            applications = applicationsList.toArray(new Application[applicationsList.size()]);
-        } catch (SQLException e) {
-            handleException("Error when reading the application information from the persistence store.", e);
-        } finally {
-            if (prepStmt != null) {
-                try {
-                    prepStmt.close();
-                } catch (SQLException e) {
-                    log.warn("Database error. Could not close Statement. Continuing with others." +
-                            e.getMessage(), e);
+            try (ResultSet rs = prepStmt.executeQuery()) {
+                while (rs.next()) {
+                    Application application = new Application(Integer.parseInt(rs.getString("APPLICATION_ID")));
+                    application.setName(rs.getString("NAME"));
+                    application.setUUID(rs.getString("UUID"));
+                    application.setOwner(rs.getString("CREATED_BY"));
+                    applicationsList.add(application);
                 }
             }
+        } catch (SQLException e) {
+            handleException("Error when reading the application information from the persistence store.", e);
         }
-        return applications;
+        return applicationsList.toArray(new Application[applicationsList.size()]);
     }
 
     /**
@@ -5707,8 +5688,7 @@ public class ApiMgtDAO {
             boolean initialAutoCommit = connection.getAutoCommit();
             connection.setAutoCommit(false);
             ps.setString(1, apiName);
-            ps.setString(2, username);
-            ps.setString(3, organization);
+            ps.setString(2, organization);
             try (ResultSet resultSet = ps.executeQuery()) {
                 while (resultSet.next()) {
                     versionList.add(resultSet.getString("API_VERSION"));
@@ -17251,6 +17231,7 @@ public class ApiMgtDAO {
             Set<String> usedClonedPolicies = new HashSet<>();
             Map<String, String> clonedPoliciesMap = new HashMap<>();
             Map<String, List<OperationPolicy>> apiToAPIPolicyMap = new HashMap<>();
+            Map<String, String> productLevelPolicies = new HashMap<>();
 
             //add the duplicate resources in each API in the API product.
             for (APIProductResource apiProductResource : productResources) {
@@ -17261,6 +17242,10 @@ public class ApiMgtDAO {
                     uuid = getUUIDFromIdentifier(productIdentifier, organization, connection);
                 }
                 int productId = getAPIID(uuid, connection);
+                if (!productLevelPolicies.containsKey(uuid)) {
+                    productLevelPolicies.put(uuid, getAPIProductLevelPolicy(uuid, connection));
+                }
+                String productLevelPolicy = productLevelPolicies.get(uuid);
                 int tenantId = APIUtil.getTenantId(APIUtil.replaceEmailDomainBack(productIdentifier.getProviderName()));
                 String tenantDomain = APIUtil.getTenantDomainFromTenantId(tenantId);
                 URITemplate uriTemplateOriginal = apiProductResource.getUriTemplate();
@@ -17280,7 +17265,9 @@ public class ApiMgtDAO {
                             uriTemplate.setAuthType(rs.getString("AUTH_SCHEME"));
                             uriTemplate.setUriTemplate(rs.getString("URL_PATTERN"));
                             String tier = rs.getString(APIConstants.THROTTLING_TIER);
-                            if (tier == null || tier.isEmpty()) {
+                            if (StringUtils.isNotEmpty(productLevelPolicy)) {
+                                uriTemplate.setThrottlingTier(productLevelPolicy);
+                            } else if (tier == null || tier.isEmpty()) {
                                 uriTemplate.setThrottlingTier(APIConstants.UNLIMITED_TIER);
                             } else {
                                 uriTemplate.setThrottlingTier(tier);
@@ -23007,6 +22994,56 @@ public class ApiMgtDAO {
         return subscribedAPIs;
     }
 
+    /**
+     * Retrieves all the subscriptions of the given application, including both plain API subscriptions and
+     * API Product subscriptions. Each returned {@link SubscribedAPI} is backed by the identifier type matching
+     * its subscription (APIIdentifier or APIProductIdentifier).
+     * <p>
+     * Unlike {@link #getSubscribedAPIsByApplication(Application)}, which filters out API Product subscriptions
+     * for backward compatibility with its existing callers, this method returns the complete set of subscriptions.
+     *
+     * @param application Application for which the subscriptions should be retrieved.
+     * @return a set of {@link SubscribedAPI} containing both API and API Product subscriptions of the application.
+     * @throws APIManagementException if an error occurs while retrieving the subscriptions.
+     */
+    public Set<SubscribedAPI> getSubscribedAPIsAndAPIProductsByApplication(Application application)
+            throws APIManagementException {
+        Set<SubscribedAPI> subscribedAPIs = new LinkedHashSet<>();
+
+        try (Connection connection = APIMgtDBUtil.getConnection();
+             PreparedStatement ps =
+                     connection.prepareStatement(SQLConstants.GET_SUBSCRIBED_APIS_BY_APP_ID_SQL)) {
+            ps.setInt(1, application.getId());
+            try (ResultSet result = ps.executeQuery()) {
+                while (result.next()) {
+                    String apiType = result.getString("TYPE");
+                    SubscribedAPI subscribedAPI;
+                    if (APIConstants.API_PRODUCT.equalsIgnoreCase(apiType)) {
+                        APIProductIdentifier identifier = new APIProductIdentifier(
+                                APIUtil.replaceEmailDomain(result.getString("API_PROVIDER")),
+                                result.getString("API_NAME"), result.getString("API_VERSION"));
+                        identifier.setUuid(result.getString("API_UUID"));
+                        subscribedAPI = new SubscribedAPI(application.getSubscriber(), identifier);
+                    } else {
+                        APIIdentifier identifier = new APIIdentifier(APIUtil.replaceEmailDomain(result.getString
+                                ("API_PROVIDER")), result.getString("API_NAME"),
+                                result.getString("API_VERSION"));
+                        identifier.setUuid(result.getString("API_UUID"));
+                        subscribedAPI = new SubscribedAPI(application.getSubscriber(), identifier);
+                    }
+                    subscribedAPI.setApplication(application);
+                    subscribedAPI.setOrganization(result.getString("ORGANIZATION"));
+                    initSubscribedAPI(subscribedAPI, result);
+                    subscribedAPIs.add(subscribedAPI);
+                }
+            }
+        } catch (SQLException e) {
+            handleException("Failed to get SubscribedAPIs and API Products of application :"
+                    + application.getName(), e);
+        }
+        return subscribedAPIs;
+    }
+
     public Set<SubscribedAPI> getPaginatedSubscribedAPIsByApplication(Application application, Integer offset,
                                                                       Integer limit, String organization)
             throws APIManagementException {
@@ -27383,16 +27420,8 @@ public class ApiMgtDAO {
             statement.setString(1, policyMappingUUID);
             try (ResultSet rs = statement.executeQuery()) {
                 while (rs.next()) {
-                    OperationPolicy operationPolicy = new OperationPolicy();
-                    operationPolicy.setPolicyName(rs.getString("POLICY_NAME"));
-                    operationPolicy.setPolicyVersion(rs.getString("POLICY_VERSION"));
-                    operationPolicy.setPolicyId(rs.getString("POLICY_UUID"));
-                    operationPolicy.setOrder(rs.getInt("POLICY_ORDER"));
-                    operationPolicy.setDirection(rs.getString("DIRECTION"));
-                    Map<String, Object> parameters =
-                    APIMgtDBUtil.convertJSONStringToMap(rs.getString("PARAMETERS"));
-                    operationPolicy.setParameters(parameters != null ? parameters : new HashMap<>());
-                    gatewayPolicies.add(operationPolicy);
+                    OperationPolicy policy = populateOperationPolicyWithRS(rs);
+                    gatewayPolicies.add(policy);
                 }
             }
         } catch (SQLException e) {
@@ -27733,7 +27762,7 @@ public class ApiMgtDAO {
 
     private void addGatewayPolicyMapping(Connection connection, List<OperationPolicy> gatewayPolicyList,
                                          String policyMappingUUID, String orgId)
-            throws SQLException, APIMgtResourceNotFoundException {
+            throws SQLException, APIMgtResourceNotFoundException, APIManagementException {
 
         try (PreparedStatement preparedStatement = connection.prepareStatement(
                 SQLConstants.GatewayPolicyConstants.ADD_GATEWAY_POLICY_MAPPING)) {
@@ -27754,7 +27783,15 @@ public class ApiMgtDAO {
                     preparedStatement.setString(2, gatewayGlobalPolicy.getPolicyId());
                     preparedStatement.setInt(3, gatewayGlobalPolicy.getOrder());
                     preparedStatement.setString(4, gatewayGlobalPolicy.getDirection());
-                    preparedStatement.setString(5, paramJSON);
+
+                    byte[] paramBytes = paramJSON.getBytes(StandardCharsets.UTF_8);
+                    try (InputStream paramInputStream = new ByteArrayInputStream(paramBytes)) {
+                        preparedStatement.setBinaryStream(5, paramInputStream, paramBytes.length);
+                    } catch (IOException e) {
+                        log.error("Error creating or reading InputStream for Global policy");
+                        throw new APIManagementException("Error processing Global policy parameters for policy ID: " +
+                                gatewayGlobalPolicy.getPolicyId(), e);
+                    }
                     preparedStatement.addBatch();
                 }
             }
@@ -28587,6 +28624,27 @@ public class ApiMgtDAO {
         for (URITemplate template : templates) {
             if (template.getUriTemplate().equals(uriTemplate) && template.getHttpVerb().equalsIgnoreCase(httpVerb)) {
                 return template;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Get the API Product level throttling policy of an API Product.
+     *
+     * @param productUuid API Product UUID
+     * @param connection  DB connection
+     * @return API Product level policy, or null if the API Product has no product level policy
+     * @throws SQLException if an error occurs while retrieving the policy
+     */
+    private String getAPIProductLevelPolicy(String productUuid, Connection connection) throws SQLException {
+
+        try (PreparedStatement prepStmt = connection.prepareStatement(SQLConstants.GET_API_PRODUCT_SQL)) {
+            prepStmt.setString(1, productUuid);
+            try (ResultSet rs = prepStmt.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getString("API_TIER");
+                }
             }
         }
         return null;

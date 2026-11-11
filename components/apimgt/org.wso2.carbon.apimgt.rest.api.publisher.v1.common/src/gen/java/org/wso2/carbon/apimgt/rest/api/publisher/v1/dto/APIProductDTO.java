@@ -271,7 +271,7 @@ return null;
   
   @ApiModelProperty(example = "pizzaproduct", value = "")
   @JsonProperty("context")
- @Size(min=1,max=60)  public String getContext() {
+ @Size(min=1,max=232)  public String getContext() {
     return context;
   }
   public void setContext(String context) {
@@ -324,7 +324,7 @@ return null;
   
   @ApiModelProperty(example = "admin", value = "If the provider value is not given, the user invoking the API will be used as the provider. ")
   @JsonProperty("provider")
- @Size(max=50)  public String getProvider() {
+ @Size(max=200)  public String getProvider() {
     return provider;
   }
   public void setProvider(String provider) {

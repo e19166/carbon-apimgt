@@ -63,6 +63,23 @@ public class APIMgtGatewayConstants {
     public static final String RESOURCE_PATTERN = "^/.+?/.+?([/?].+)$";
     public static final String AUTHENTICATORS_CHALLENGE_STRING = "API:authenticators_challenge_string";
 
+    /**
+     * Constants for identifying which error flow triggered the
+     * current error handling
+     */
+    public static final String API_ERROR_TYPE = "API_ERROR_TYPE";
+    public static final String API_ERROR_TYPE_AUTH = "AUTH";
+    public static final String API_ERROR_TYPE_THROTTLE = "THROTTLE";
+    public static final String API_ERROR_TYPE_THREAT = "THREAT";
+    public static final String API_ERROR_TYPE_RESOURCE_MISMATCH = "RESOURCE_MISMATCH";
+    public static final String API_ERROR_TYPE_BLOCKED = "BLOCKED";
+    public static final String API_ERROR_TYPE_BACKEND = "BACKEND";
+
+    /**
+     * Message-context property that stores the resolved AI error response formatter sequence
+     */
+    public static final String AI_CUSTOM_ERROR_FORMAT_SEQUENCE = "AI_CUSTOM_ERROR_FORMAT_SEQUENCE";
+
     public static final String METHOD_NOT_FOUND_ERROR_MSG = "Method not allowed for given API resource";
     public static final String RESOURCE_NOT_FOUND_ERROR_MSG = "No matching resource found for given API Request";
     public static final String REQUEST_TYPE_FAIL_MSG = "Neither request method nor content type is matched with" +
@@ -147,6 +164,8 @@ public class APIMgtGatewayConstants {
     public static final String SPAN_REQUEST_PATH = "span.request.path";
     public static final String SPAN_REQUEST_METHOD = "span.request.method";
     public static final String SERVER = "server";
+    public static final String TRACE_ID_LOG_KEY = "trace_id";
+    public static final String SPAN_ID_LOG_KEY = "span_id";
     public static final String ERROR = "error";
     public static final String KEY_SPAN_ERROR = "API Authentication Failure";
     public static final String RESPONSE_MEDIATION_ERROR = "Error in Response Mediation";
@@ -212,6 +231,9 @@ public class APIMgtGatewayConstants {
 
     //This will be a reserved name for the synapse message context properties.
     public static final String ADDITIONAL_ANALYTICS_PROPS = "ADDITIONAL_ANALYTICS_PROPS_TO_PUBLISH";
+    // Product-internal property for publishing additional data to analytics, as named sections (e.g. aiTokenUsage).
+    // Not exposed to extension listeners or custom code, unlike ADDITIONAL_ANALYTICS_PROPS.
+    public static final String PRODUCT_ANALYTICS_PROPS = "PRODUCT_ANALYTICS_PROPS_TO_PUBLISH";
 
     public static final String AZP_JWT_CLAIM = "azp";
     public static final String ENTITY_ID_JWT_CLAIM = "entity_id";

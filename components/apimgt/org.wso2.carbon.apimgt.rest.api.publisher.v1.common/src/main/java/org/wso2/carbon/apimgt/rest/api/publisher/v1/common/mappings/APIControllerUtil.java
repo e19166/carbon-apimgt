@@ -257,6 +257,28 @@ public class APIControllerUtil {
             if (pair.getValue() instanceof Map) {
                 convertValuesToStrings((Map) pair.getValue());
             }
+            if (pair.getValue() instanceof List) {
+                convertListValuesToStrings((List) pair.getValue());
+            }
+        }
+    }
+
+    /**
+     * This method will be used to convert any integer values to strings in a list of values, such as a list of
+     * error codes, and in the maps the list holds.
+     *
+     * @param values List to be validated and converted
+     */
+    private static void convertListValuesToStrings(List<Object> values) {
+        for (int i = 0; i < values.size(); i++) {
+            Object value = values.get(i);
+            if (value instanceof Integer) {
+                values.set(i, value.toString());
+            } else if (value instanceof Map) {
+                convertValuesToStrings((Map) value);
+            } else if (value instanceof List) {
+                convertListValuesToStrings((List) value);
+            }
         }
     }
 
@@ -402,10 +424,24 @@ public class APIControllerUtil {
                             endpointSecurityDetails.addProperty(APIConstants.ENDPOINT_SECURITY_TYPE,
                                     APIConstants.ENDPOINT_SECURITY_TYPE_OAUTH.toUpperCase());
                             validateEndpointSecurityOauth(endpointSecurityDetails);
+                        } else if (StringUtils.equals(endpointSecurityType.toLowerCase(),
+                                APIConstants.ENDPOINT_SECURITY_TYPE_API_KEY)) {
+                            endpointSecurityDetails.addProperty(APIConstants.ENDPOINT_SECURITY_TYPE,
+                                    APIConstants.ENDPOINT_SECURITY_TYPE_API_KEY);
+                            // Default the identifier type to HEADER when not specified (mirrors the Publisher UI).
+                            if (!endpointSecurityDetails.has(APIConstants.ENDPOINT_SECURITY_API_KEY_IDENTIFIER_TYPE)
+                                    || endpointSecurityDetails
+                                    .get(APIConstants.ENDPOINT_SECURITY_API_KEY_IDENTIFIER_TYPE).isJsonNull()) {
+                                endpointSecurityDetails.addProperty(
+                                        APIConstants.ENDPOINT_SECURITY_API_KEY_IDENTIFIER_TYPE,
+                                        org.wso2.carbon.apimgt.api.APIConstants.AIAPIConstants
+                                                .API_KEY_IDENTIFIER_TYPE_HEADER);
+                            }
+                            validateEndpointSecurityApiKey(endpointSecurityDetails);
                         } else {
-                            // If the type is not either basic or digest, return an error
+                            // If the type is not either basic, digest, oauth or apikey, return an error
                             throw new APIManagementException("Invalid endpoint security type found in the params file. "
-                                    + "Should be either basic, digest or oauth. "
+                                    + "Should be either basic, digest, oauth or apikey. "
                                     + "Please specify correct security types field and continue...",
                                     ExceptionCodes.ERROR_READING_PARAMS_FILE);
                         }
@@ -427,6 +463,30 @@ public class APIControllerUtil {
             }
         }
         endpointConfig.add(APIConstants.ENDPOINT_SECURITY, security);
+    }
+    /**
+     * Check whether the apiKeyIdentifier and apiKeyValue fields have set in the params file
+     *
+     * @param endpointSecurityDetails Endpoint security details per endpoint type
+     * @throws APIManagementException If an error occurs when reading the security env parameters
+     */
+    private static void validateEndpointSecurityApiKey(JsonObject endpointSecurityDetails)
+            throws APIManagementException {
+
+        if (!endpointSecurityDetails.has(APIConstants.ENDPOINT_SECURITY_API_KEY_IDENTIFIER)
+                || endpointSecurityDetails.get(APIConstants.ENDPOINT_SECURITY_API_KEY_IDENTIFIER) == null
+                || endpointSecurityDetails.get(APIConstants.ENDPOINT_SECURITY_API_KEY_IDENTIFIER).isJsonNull()) {
+            throw new APIManagementException("You have enabled endpoint security but the apiKeyIdentifier is not "
+                    + "found in the params file. Please specify apiKeyIdentifier field and continue...",
+                    ExceptionCodes.ERROR_READING_PARAMS_FILE);
+        }
+        if (!endpointSecurityDetails.has(APIConstants.ENDPOINT_SECURITY_API_KEY_VALUE)
+                || endpointSecurityDetails.get(APIConstants.ENDPOINT_SECURITY_API_KEY_VALUE) == null
+                || endpointSecurityDetails.get(APIConstants.ENDPOINT_SECURITY_API_KEY_VALUE).isJsonNull()) {
+            throw new APIManagementException("You have enabled endpoint security but the apiKeyValue is not found "
+                    + "in the params file. Please specify apiKeyValue field and continue...",
+                    ExceptionCodes.ERROR_READING_PARAMS_FILE);
+        }
     }
 
     /**

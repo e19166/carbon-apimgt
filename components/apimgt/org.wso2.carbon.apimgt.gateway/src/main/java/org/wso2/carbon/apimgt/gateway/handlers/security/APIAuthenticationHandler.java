@@ -42,6 +42,7 @@ import org.wso2.carbon.apimgt.gateway.handlers.security.oauth.OAuthAuthenticator
 import org.wso2.carbon.apimgt.gateway.internal.ServiceReferenceHolder;
 import org.wso2.carbon.apimgt.gateway.utils.GatewayUtils;
 import org.wso2.carbon.apimgt.gateway.utils.MCPUtils;
+import org.wso2.carbon.apimgt.gateway.utils.TelemetryLogUtil;
 import org.wso2.carbon.apimgt.impl.APIConstants;
 import org.wso2.carbon.apimgt.impl.APIManagerConfiguration;
 import org.wso2.carbon.apimgt.impl.APIManagerConfigurationService;
@@ -413,6 +414,7 @@ public class APIAuthenticationHandler extends AbstractHandler implements Managed
 
         TracingSpan keyTracingSpan = null;
         TelemetrySpan keySpan = null;
+        TelemetryLogUtil.TracingIds previousTracingIds = null;
         if (TelemetryUtil.telemetryEnabled()) {
             TelemetrySpan responseLatencySpan =
                     (TelemetrySpan) messageContext.getProperty(APIMgtGatewayConstants.RESOURCE_SPAN);
@@ -446,6 +448,7 @@ public class APIAuthenticationHandler extends AbstractHandler implements Managed
         }
 
         try {
+            previousTracingIds = TelemetryLogUtil.enterSpan(keySpan);
             if (isAnalyticsEnabled()) {
                 long currentTime = System.currentTimeMillis();
                 messageContext.setProperty("api.ut.requestTime", Long.toString(currentTime));
@@ -569,6 +572,7 @@ public class APIAuthenticationHandler extends AbstractHandler implements Managed
                 handleAuthFailure(messageContext, e);
         } finally {
             if (TelemetryUtil.telemetryEnabled()) {
+                TelemetryLogUtil.exitSpan(previousTracingIds);
                 TelemetryUtil.finishSpan(keySpan);
             } else if (Util.tracingEnabled()) {
                 Util.finishSpan(keyTracingSpan);
